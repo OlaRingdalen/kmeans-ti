@@ -41,7 +41,7 @@ import java.util.Collection;
  * For example <code>"1 6.2 3.2\n2 2.9 5.7\n"</code> gives two centers (id=1, x=6.2, y=3.2) and (id=2, x=2.9, y=5.7).
  * </ul>
  *
- * <p>Usage: <code>KMeans --points &lt;path&gt; --centroids &lt;path&gt; --output &lt;path&gt; --iterations &lt;n&gt; --d &lt;n dimensions&gt;</code><br>
+ * <p>Usage: <code>KMeans --points &lt;path&gt; --centroids &lt;path&gt; --output &lt;path&gt; <br>--iterations &lt;n&gt; --d &lt;n dimensions&gt;</code><br>
  *
  * <p>This example shows how to use:
  * <ul>
