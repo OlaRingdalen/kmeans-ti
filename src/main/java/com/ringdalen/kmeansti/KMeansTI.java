@@ -1,19 +1,21 @@
 package com.ringdalen.kmeansti;
 
-import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.functions.ReduceFunction;
-import org.apache.flink.api.common.functions.RichMapFunction;
+import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.functions.FunctionAnnotation.ForwardedFields;
 import org.apache.flink.api.java.operators.IterativeDataSet;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
+import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.util.Collector;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 
 /**
  * This example implements a basic K-Means clustering algorithm.
@@ -60,7 +62,8 @@ public class KMeansTI {
         final ParameterTool params = ParameterTool.fromArgs(args);
 
         // set up execution environment
-        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        //ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        ExecutionEnvironment env = ExecutionEnvironment.createLocalEnvironment();
 
         // make parameters available in the web interface
         env.getConfig().setGlobalJobParameters(params);
@@ -70,26 +73,57 @@ public class KMeansTI {
         DataSet<Point> points = getPointDataSet(params, env);
         DataSet<Centroid> centroids = getCentroidDataSet(params, env);
 
+        // Fetching the number of iterations that the program is executed with
+        int iterations = params.getInt("iterations", 10);
+
+        // A DataSet consisting of distances between all the Centroids
+        //DataSet<Tuple3<Integer, Integer, Double>> iCD = centroids.crossWithTiny(centroids)
+                //.map(new computeCentroidInterDistance());
+
+        //iCD.print();
+        //DataSet<Tuple3<Integer, Integer, Double>> iCD = centroids.crossWithTiny(centroids)
+        //        .map(new computeCentroidInterDistance());
+
+        /*DataSet<Tuple2<Centroid, DistArray>> processedCentroids = centroids
+                .map(new computeDistArray())
+                .withBroadcastSet(centroids, "centroids");*/
+
+        //processedCentroids.print();
+
+        //List dista = centroids.collect();
+
+        //System.out.println(dista.get(0));
+
+        // Initializing all points to belong to cluster 0
+        DataSet<Tuple2<Integer, Point>> nullClusteredPoint = points
+                .map(new assignPointToNullCluster());
+
+
         // set number of bulk iterations for KMeans algorithm
-        IterativeDataSet<Centroid> loop = centroids.iterate(params.getInt("iterations", 10));
+        IterativeDataSet<Centroid> loop = centroids.iterate(iterations);
 
-        DataSet<Centroid> newCentroids = points
+        // Asssigning each point to the nearest centroid
+        DataSet<Tuple2<Integer, Point>> partialClusteredPoints = nullClusteredPoint
                 // compute closest centroid for each point
-                .map(new SelectNearestCenter()).withBroadcastSet(loop, "centroids")
+                .map(new SelectNearestCenter())
+                .withBroadcastSet(loop, "centroids");
 
+        DataSet<Centroid> newCentroids = partialClusteredPoints
                 // count and sum point coordinates for each centroid
                 .map(new CountAppender())
                 .groupBy(0).reduce(new CentroidAccumulator())
 
                 // compute new centroids from point counts and coordinate sums
-                .map(new CentroidAverager());
+                .map(new CentroidAverager())
+                ;
 
         // feed new centroids back into next iteration
         DataSet<Centroid> finalCentroids = loop.closeWith(newCentroids);
 
-        DataSet<Tuple2<Integer, Point>> clusteredPoints = points
+        DataSet<Tuple2<Integer, Point>> clusteredPoints = nullClusteredPoint
                 // assign points to final clusters
-                .map(new SelectNearestCenter()).withBroadcastSet(finalCentroids, "centroids");
+                .map(new SelectNearestCenter())
+                .withBroadcastSet(finalCentroids, "centroids");
 
         // emit result
         if (params.has("output")) {
@@ -114,9 +148,9 @@ public class KMeansTI {
 
         DataSet<Centroid> centroids;
 
-        // Parsing all the data from file to Centroid objects
+        // Parsing d features, plus the ID (thats why the +1 is included) from file to Centroid objects
         centroids = env.readTextFile(params.get("centroids"))
-                .map(new ReadCentroidData(params.getInt("d")));
+                .map(new ReadCentroidData(params.getInt("d") + 1));
 
         return centroids;
     }
@@ -128,7 +162,7 @@ public class KMeansTI {
 
         DataSet<Point> points;
 
-        // Parsing all the data from file to Point objects
+        // Parsing d features from file to Point objects
         points = env.readTextFile(params.get("points"))
                 .map(new ReadPointData(params.getInt("d")));
 
@@ -139,12 +173,20 @@ public class KMeansTI {
     //     DATA TYPES
     // *************************************************************************
 
+    public static class DistArray implements Serializable {
+        public double[][] dists;
+
+        public DistArray() {};
+
+        public DistArray(double[][] dists) {
+            this.dists = dists;
+        };
+    }
+
     /**
      * A n-dimensional point.
      */
     public static class Point implements Serializable {
-
-        // public double x, y;
 
         public double[] features;
         public int dimension;
@@ -152,22 +194,11 @@ public class KMeansTI {
         /** A public no-argument constructor is required for POJOs (Plain Old Java Objects) */
         public Point() {}
 
-        /*public Point(double x, double y) {
-            this.x = x;
-            this.y = y;
-        }*/
-
-        /** A point consists of n features */
+        /** A public constructor that takes the features, represented as an array of doubles as the argument */
         public Point(double[] features) {
             this.features = features;
             this.dimension = features.length;
         }
-
-        /*public Point add(Point other) {
-            x += other.x;
-            y += other.y;
-            return this;
-        } */
 
         /** Function that adds this point with any given point */
         public Point add(Point other) {
@@ -178,12 +209,6 @@ public class KMeansTI {
             return this;
         }
 
-        /*public Point div(long val) {
-            x /= val;
-            y /= val;
-            return this;
-        } */
-
         /** Function that divides this point with a given value */
         public Point div(long val) {
             for(int i = 0; i < dimension; i++) {
@@ -191,10 +216,6 @@ public class KMeansTI {
             }
             return this;
         }
-
-        /*public double euclideanDistance(Point other) {
-            return Math.sqrt((x - other.x) * (x - other.x) + (y - other.y) * (y - other.y));
-        } */
 
         /** Function that return the euclidian distance between this point and any given point */
         public double euclideanDistance(Point other) {
@@ -205,22 +226,15 @@ public class KMeansTI {
             }
 
             return Math.sqrt(dist);
+            //return new EuclideanDistance().compute(features, other.features);
         }
 
-        /* public void clear() {
-            x = y = 0.0;
-        } */
-
+        /** Function to clear / null-out the point */
         public void clear() {
             for(int i = 0; i < dimension; i++) {
                 features[i] = 0.0;
             }
         }
-
-        /*@Override
-        public String toString() {
-            return x + " " + y;
-        } */
 
         /** Function to represent the point in a string */
         @Override
@@ -240,30 +254,25 @@ public class KMeansTI {
      */
     public static class Centroid extends Point {
 
+        /** The ID of an centroid, which also represents the cluster */
         public int id;
 
+        /** A public no-argument constructor is required for POJOs (Plain Old Java Objects) */
         public Centroid() {}
 
-        /*public Centroid(int id, double x, double y) {
-            super(x, y);
-            this.id = id;
-        }*/
-
+        /** A public constructor that takes an id and the features, represented as an array as the arguments */
         public Centroid(int id, double[] features) {
             super(features);
             this.id = id;
         }
 
-        /*public Centroid(int id, Point p) {
-            super(p.x, p.y);
-            this.id = id;
-        }*/
-
+        /** A public constructor that takes an id and a Point as the arguments */
         public Centroid(int id, Point p) {
             super(p.features);
             this.id = id;
         }
 
+        /** Function to represent the point in a string */
         @Override
         public String toString() {
             return id + ": " + super.toString();
@@ -274,7 +283,7 @@ public class KMeansTI {
     //     USER FUNCTIONS
     // *************************************************************************
 
-    /** Function to take the input data and generate points */
+    /** Reads the input data and generate points */
     public static class ReadPointData implements MapFunction<String, Point> {
         double[] row;
 
@@ -294,7 +303,7 @@ public class KMeansTI {
         }
     }
 
-    /** Function to take the input data and generate centroids */
+    /** Reads the input data and generate centroids */
     public static class ReadCentroidData implements MapFunction<String, Centroid> {
         double[] row;
 
@@ -317,8 +326,8 @@ public class KMeansTI {
     }
 
     /** Determines the closest cluster center for a data point. */
-    @ForwardedFields("*->1")
-    public static final class SelectNearestCenter extends RichMapFunction<Point, Tuple2<Integer, Point>> {
+    @ForwardedFields("f1")
+    public static final class SelectNearestCenter extends RichMapFunction<Tuple2<Integer, Point>, Tuple2<Integer, Point>> {
         private Collection<Centroid> centroids;
 
         /** Reads the centroid values from a broadcast variable into a collection. */
@@ -328,7 +337,7 @@ public class KMeansTI {
         }
 
         @Override
-        public Tuple2<Integer, Point> map(Point p) throws Exception {
+        public Tuple2<Integer, Point> map(Tuple2<Integer, Point> p) throws Exception {
 
             double minDistance = Double.MAX_VALUE;
             int closestCentroidId = -1;
@@ -336,9 +345,9 @@ public class KMeansTI {
             // check all cluster centers
             for (Centroid centroid : centroids) {
                 // compute distance
-                double distance = p.euclideanDistance(centroid);
+                double distance = p.f1.euclideanDistance(centroid);
 
-                System.out.println("AHEEM! Calculated distance between " + p.toString() + " and " + centroid.toString() + " is " + distance);
+                //System.out.println("AHEEM! Calculated distance between " + p.toString() + " and " + centroid.toString() + " is " + distance);
 
                 // update nearest cluster if necessary
                 if (distance < minDistance) {
@@ -348,7 +357,7 @@ public class KMeansTI {
             }
 
             // emit a new record with the center id and the data point.
-            return new Tuple2<>(closestCentroidId, p);
+            return new Tuple2<>(closestCentroidId, p.f1);
         }
     }
 
@@ -379,6 +388,57 @@ public class KMeansTI {
         @Override
         public Centroid map(Tuple3<Integer, Point, Long> value) {
             return new Centroid(value.f0, value.f1.div(value.f2));
+        }
+    }
+
+    /** Assigns each point the cluster 0, which does not exist */
+    @ForwardedFields("*->f1")
+    public final static class assignPointToNullCluster implements MapFunction<Point, Tuple2<Integer, Point>> {
+
+        @Override
+        public Tuple2<Integer, Point> map(Point point) throws Exception {
+            return new Tuple2<>(0, point);
+        }
+    }
+
+    public static final class computeCentroidInterDistance implements MapFunction<Tuple2<Centroid, Centroid>, Tuple3<Integer, Integer, Double>> {
+
+        @Override
+        public Tuple3<Integer, Integer, Double> map(Tuple2<Centroid, Centroid> centroid) throws Exception {
+            return new Tuple3<>(centroid.f0.id, centroid.f1.id, centroid.f0.euclideanDistance(centroid.f1));
+        }
+    }
+
+    public static final class computeDistArray extends RichMapFunction<Centroid, Tuple2<Centroid, DistArray>> {
+
+        private Collection<Centroid> centroids;
+        //private DistArray arr;
+        double[][] arr = new double[3][3];
+
+        /** Reads the centroid values from a broadcast variable into a collection. */
+        @Override
+        public void open(Configuration parameters) throws Exception {
+            this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
+        }
+
+        @Override
+        public Tuple2<Centroid, DistArray> map(Centroid centroid) throws Exception {
+
+            int i = 0;
+            int j = 0;
+
+            for (Centroid ci: centroids) {
+                for (Centroid cj: centroids) {
+
+                    arr[i][j] = ci.euclideanDistance(cj);
+
+                    j++;
+                }
+
+                i++;
+            }
+
+            return new Tuple2<>(centroid, new DistArray(arr));
         }
     }
 }
