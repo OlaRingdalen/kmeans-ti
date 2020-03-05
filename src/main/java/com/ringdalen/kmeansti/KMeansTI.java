@@ -268,16 +268,6 @@ public class KMeansTI {
     //     DATA TYPES
     // *************************************************************************
 
-    public static class DistArray implements Serializable {
-        public double[][] dists;
-
-        public DistArray() {};
-
-        public DistArray(double[][] dists) {
-            this.dists = dists;
-        };
-    }
-
     /**
      * A n-dimensional point.
      */
@@ -285,7 +275,6 @@ public class KMeansTI {
 
         public double[] features;
         public int dimension;
-        public int assignedCluster = 0;
 
         /** A public no-argument constructor is required for POJOs (Plain Old Java Objects) */
         public Point() {}
@@ -414,7 +403,7 @@ public class KMeansTI {
 
     /** Reads the input data and generate centroids */
     public static class ReadCentroidData implements MapFunction<String, Centroid> {
-        double[] row = null;
+        double[] row;
 
         public ReadCentroidData(int d){
             //System.out.println("D is of length: " + d);
@@ -518,7 +507,7 @@ public class KMeansTI {
         public void reduce(Iterable<Centroid> iterable, Collector<double[][]> collector) throws Exception {
             LOG.error("Function executed");
 
-            List<Centroid> l = new ArrayList<Centroid>();
+            List<Centroid> l = new ArrayList<>();
 
             for(Centroid c : iterable) {
                 l.add(c);
