@@ -4,18 +4,23 @@ import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.functions.FunctionAnnotation.ForwardedFields;
+import org.apache.flink.api.java.operators.DeltaIteration;
 import org.apache.flink.api.java.operators.IterativeDataSet;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.FileSystem.WriteMode;
 import org.apache.flink.util.Collector;
 
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
+import java.util.*;
+
+import org.slf4j.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.event.Level;
+
 
 /**
  * This example implements a basic K-Means clustering algorithm.
@@ -56,6 +61,8 @@ import java.util.List;
 @SuppressWarnings("serial")
 public class KMeansTI {
 
+    private static final Logger LOG = LoggerFactory.getLogger(KMeansTI.class);
+
     public static void main(String[] args) throws Exception {
 
         // Checking input parameters
@@ -76,34 +83,17 @@ public class KMeansTI {
         // Fetching the number of iterations that the program is executed with
         int iterations = params.getInt("iterations", 10);
 
-        // A DataSet consisting of distances between all the Centroids
-        //DataSet<Tuple3<Integer, Integer, Double>> iCD = centroids.crossWithTiny(centroids)
-                //.map(new computeCentroidInterDistance());
-
-        //iCD.print();
-        //DataSet<Tuple3<Integer, Integer, Double>> iCD = centroids.crossWithTiny(centroids)
-        //        .map(new computeCentroidInterDistance());
-
-        /*DataSet<Tuple2<Centroid, DistArray>> processedCentroids = centroids
-                .map(new computeDistArray())
-                .withBroadcastSet(centroids, "centroids");*/
-
-        //processedCentroids.print();
-
-        //List dista = centroids.collect();
-
-        //System.out.println(dista.get(0));
-
         // Initializing all points to belong to cluster 0
-        DataSet<Tuple2<Integer, Point>> nullClusteredPoint = points
-                .map(new assignPointToNullCluster());
+        //DataSet<Tuple2<Integer, Point>> nullClusteredPoints = points
+        //        .map(new assignPointToNullCluster());
 
+        //IterativeDataSet<Centroid> loop = centroids.iterate(iterations);
 
         // set number of bulk iterations for KMeans algorithm
-        IterativeDataSet<Centroid> loop = centroids.iterate(iterations);
+        //DeltaIteration<Centroid, Tuple2<Integer, Point>> deltaLoop = centroids.iterateDelta(nullClusteredPoint, iterations, 0);
 
         // Asssigning each point to the nearest centroid
-        DataSet<Tuple2<Integer, Point>> partialClusteredPoints = nullClusteredPoint
+        /*DataSet<Tuple2<Integer, Point>> partialClusteredPoints = nullClusteredPoints
                 // compute closest centroid for each point
                 .map(new SelectNearestCenter())
                 .withBroadcastSet(loop, "centroids");
@@ -120,10 +110,115 @@ public class KMeansTI {
         // feed new centroids back into next iteration
         DataSet<Centroid> finalCentroids = loop.closeWith(newCentroids);
 
-        DataSet<Tuple2<Integer, Point>> clusteredPoints = nullClusteredPoint
+        //DataSet<Tuple2<Integer, Point>> x = partialClusteredPoints;
+
+        DataSet<Tuple2<Integer, Point>> clusteredPoints = partialClusteredPoints
+                // assign points to final clusters
+                .map(new SelectNearestCenter())
+                .withBroadcastSet(finalCentroids, "centroids");*/
+
+        /*
+         *   APPROACH #1
+         */
+        /*
+        IterativeDataSet<Centroid> cLoop = centroids.iterate(iterations);
+
+        DeltaIteration<Tuple2<Integer, Point>, Centroid> iteration = nullClusteredPoints.iterateDelta(centroids, iterations, 0);
+
+        DataSet<Tuple2<Integer, Point>> partialClusteredPoints = iteration.getSolutionSet()
+                // compute closest centroid for each point
+                .map(new SelectNearestCenter())
+                .withBroadcastSet(iteration.getWorkset(), "centroids");
+
+        DataSet<Centroid> newCentroids = partialClusteredPoints
+                // count and sum point coordinates for each centroid
+                .map(new CountAppender())
+                .groupBy(0).reduce(new CentroidAccumulator())
+
+                // compute new centroids from point counts and coordinate sums
+                .map(new CentroidAverager())
+                ;
+
+        DataSet<Tuple2<Integer, Point>> clusteredPoints = iteration.closeWith(partialClusteredPoints, newCentroids);
+
+         */
+
+        /*
+         *   APPROACH #2
+         */
+
+        // Asssigning each point to the nearest centroid
+        /*DataSet<Tuple2<Integer, Point>> partialClusteredPoints = nullClusteredPoints
+                // compute closest centroid for each point
+                .map(new SelectNearestCenter())
+                .withBroadcastSet(centroids, "centroids");
+
+        IterativeDataSet<Centroid> cloop = centroids.iterate(iterations);
+
+        IterativeDataSet<Tuple2<Integer, Point>> loop = partialClusteredPoints.iterate(iterations);
+
+        // Asssigning each point to the nearest centroid
+        partialClusteredPoints = partialClusteredPoints
+                // compute closest centroid for each point
+                .map(new SelectNearestCenter())
+                .withBroadcastSet(centroids, "centroids");
+
+        DataSet<Centroid> newCentroids = partialClusteredPoints
+                // count and sum point coordinates for each centroid
+                .map(new CountAppender())
+                .groupBy(0).reduce(new CentroidAccumulator())
+
+                // compute new centroids from point counts and coordinate sums
+                .map(new CentroidAverager());
+
+        // feed new centroids back into next iteration
+        DataSet<Tuple2<Integer, Point>> clusteredPoints = loop.closeWith(partialClusteredPoints, newCentroids);
+
+        DataSet<Tuple2<Integer, Point>> finalPoints = clusteredPoints
+                // assign points to final clusters
+                .map(new SelectNearestCenter())
+                .withBroadcastSet(centroids, "centroids");*/
+
+        /*
+         *   APPROACH TO DISK
+         */
+
+        DataSet<double[][]> matrix = centroids.reduceGroup(new computeCentroidInterDistance());
+
+        LOG.error("Main executed");
+
+        matrix.print();
+
+        DataSet<Tuple2<Integer, Point>> nullClusteredPoints = points
+                .map(new assignPointToNullCluster());
+
+        nullClusteredPoints.writeAsText("file:///home/ola/code/kmeans-ti/data/tempout.txt", WriteMode.OVERWRITE)
+                .setParallelism(1);
+
+        IterativeDataSet<Centroid> loop = centroids.iterate(iterations);
+
+        // Asssigning each point to the nearest centroid
+        DataSet<Tuple2<Integer, Point>> partialClusteredPoints = nullClusteredPoints
+                // compute closest centroid for each point
+                .map(new SelectNearestCenter())
+                .withBroadcastSet(loop, "centroids");
+
+        DataSet<Centroid> newCentroids = partialClusteredPoints
+                // count and sum point coordinates for each centroid
+                .map(new CountAppender())
+                .groupBy(0).reduce(new CentroidAccumulator())
+
+                // compute new centroids from point counts and coordinate sums
+                .map(new CentroidAverager());
+
+        // feed new centroids back into next iteration
+        DataSet<Centroid> finalCentroids = loop.closeWith(newCentroids);
+
+        DataSet<Tuple2<Integer, Point>> clusteredPoints = nullClusteredPoints
                 // assign points to final clusters
                 .map(new SelectNearestCenter())
                 .withBroadcastSet(finalCentroids, "centroids");
+
 
         // emit result
         if (params.has("output")) {
@@ -150,7 +245,7 @@ public class KMeansTI {
 
         // Parsing d features, plus the ID (thats why the +1 is included) from file to Centroid objects
         centroids = env.readTextFile(params.get("centroids"))
-                .map(new ReadCentroidData(params.getInt("d") + 1));
+                .map(new ReadCentroidData(params.getInt("d")));
 
         return centroids;
     }
@@ -190,6 +285,7 @@ public class KMeansTI {
 
         public double[] features;
         public int dimension;
+        public int assignedCluster = 0;
 
         /** A public no-argument constructor is required for POJOs (Plain Old Java Objects) */
         public Point() {}
@@ -242,7 +338,11 @@ public class KMeansTI {
             StringBuilder s = new StringBuilder();
 
             for(int i = 0; i < dimension; i++) {
-                s.append(features[i]).append(" ");
+                if (i < dimension-1) {
+                    s.append(features[i]).append(" ");
+                } else {
+                    s.append(features[i]);
+                }
             }
 
             return s.toString();
@@ -252,7 +352,7 @@ public class KMeansTI {
     /**
      * A n-dimensional centroid, basically a point with an ID.
      */
-    public static class Centroid extends Point {
+    public static class Centroid extends Point implements Comparable<Centroid>{
 
         /** The ID of an centroid, which also represents the cluster */
         public int id;
@@ -272,10 +372,19 @@ public class KMeansTI {
             this.id = id;
         }
 
+        public Integer getID() {
+            return id;
+        }
+
+        /** A method to allow for comparing the ID of two different centroids */
+        public int compareTo(Centroid c) {
+            return this.getID().compareTo(c.getID());
+        }
+
         /** Function to represent the point in a string */
         @Override
         public String toString() {
-            return id + ": " + super.toString();
+            return id + ", " + super.toString();
         }
     }
 
@@ -305,9 +414,10 @@ public class KMeansTI {
 
     /** Reads the input data and generate centroids */
     public static class ReadCentroidData implements MapFunction<String, Centroid> {
-        double[] row;
+        double[] row = null;
 
         public ReadCentroidData(int d){
+            //System.out.println("D is of length: " + d);
             row = new double[d];
         }
 
@@ -316,9 +426,9 @@ public class KMeansTI {
             String[] buffer = s.split(" ");
             int id = Integer.parseInt(buffer[0]);
 
-            // Start loop at one since first number is ID of centroid
-            for(int i = 1; i < row.length; i++) {
-                row[i] = Double.parseDouble(buffer[i]);
+            // buffer is +1 since this array is one longer
+            for(int i = 0; i < row.length; i++) {
+                row[i] = Double.parseDouble(buffer[i+1]);
             }
 
             return new Centroid(id, row);
@@ -401,44 +511,50 @@ public class KMeansTI {
         }
     }
 
-    public static final class computeCentroidInterDistance implements MapFunction<Tuple2<Centroid, Centroid>, Tuple3<Integer, Integer, Double>> {
+    /** Takes all centroids and computes centroid inter-distances */
+    public static class computeCentroidInterDistance implements GroupReduceFunction<Centroid, double[][]> {
 
         @Override
-        public Tuple3<Integer, Integer, Double> map(Tuple2<Centroid, Centroid> centroid) throws Exception {
-            return new Tuple3<>(centroid.f0.id, centroid.f1.id, centroid.f0.euclideanDistance(centroid.f1));
-        }
-    }
+        public void reduce(Iterable<Centroid> iterable, Collector<double[][]> collector) throws Exception {
+            LOG.error("Function executed");
 
-    public static final class computeDistArray extends RichMapFunction<Centroid, Tuple2<Centroid, DistArray>> {
+            List<Centroid> l = new ArrayList<Centroid>();
 
-        private Collection<Centroid> centroids;
-        //private DistArray arr;
-        double[][] arr = new double[3][3];
-
-        /** Reads the centroid values from a broadcast variable into a collection. */
-        @Override
-        public void open(Configuration parameters) throws Exception {
-            this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
-        }
-
-        @Override
-        public Tuple2<Centroid, DistArray> map(Centroid centroid) throws Exception {
-
-            int i = 0;
-            int j = 0;
-
-            for (Centroid ci: centroids) {
-                for (Centroid cj: centroids) {
-
-                    arr[i][j] = ci.euclideanDistance(cj);
-
-                    j++;
-                }
-
-                i++;
+            for(Centroid c : iterable) {
+                l.add(c);
             }
 
-            return new Tuple2<>(centroid, new DistArray(arr));
+            int dims = l.size();
+
+            // Ensure that the centroids are sorted in ascending order on their ID
+            Collections.sort(l);
+
+            // Allocate the multidimensional array
+            double[][] matrix = new double[dims][dims];
+
+            for(int i = 0; i < l.size(); i++) {
+                Centroid ci = l.get(i);
+
+                for(int j = 0; j < l.size(); j++) {
+                    Centroid cj = l.get(j);
+
+                    double dist = ci.euclideanDistance(cj);
+
+                    matrix[i][j] = dist;
+
+                    System.out.println("Dist between " + i + " & " + j + " is: " + dist);
+                }
+            }
+
+            // Only used for debugging
+            for(int i = 0; i < matrix.length; i++) {
+                for(int j = 0; j < matrix[i].length; j++) {
+                    System.out.print(matrix[i][j] + " ");
+                }
+                System.out.println("");
+            }
+
+            collector.collect(matrix);
         }
     }
 }
