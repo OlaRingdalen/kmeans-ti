@@ -1,5 +1,8 @@
 package com.ringdalen.kmeansti;
 
+import com.ringdalen.kmeansti.util.DataTypes.Point;
+import com.ringdalen.kmeansti.util.DataTypes.Centroid;
+
 import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
@@ -8,7 +11,6 @@ import org.apache.flink.api.java.operators.DeltaIteration;
 import org.apache.flink.api.java.operators.IterativeDataSet;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
-import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileSystem.WriteMode;
@@ -19,43 +21,17 @@ import java.util.*;
 
 import org.slf4j.LoggerFactory;
 import org.slf4j.Logger;
-import org.slf4j.event.Level;
 
 
 /**
- * This example implements a basic K-Means clustering algorithm.
+ * This code is an extended version of the K-Means clustering algorithm provided as an example with Aapche Flink.
  *
- * <p>K-Means is an iterative clustering algorithm and works as follows:<br>
- * K-Means is given a set of data points to be clustered and an initial set of <i>K</i> cluster centers.
- * In each iteration, the algorithm computes the distance of each data point to each cluster center.
- * Each point is assigned to the cluster center which is closest to it.
- * Subsequently, each cluster center is moved to the center (<i>mean</i>) of all points that have been assigned to it.
- * The moved cluster centers are fed into the next iteration.
- * The algorithm terminates after a fixed number of iterations (as in this implementation)
- * or if cluster centers do not (significantly) move in an iteration.<br>
- * This is the Wikipedia entry for the <a href="http://en.wikipedia.org/wiki/K-means_clustering">K-Means Clustering algorithm</a>.
- *
- * <p>This implementation works on two-dimensional data points. <br>
- * It computes an assignment of data points to cluster centers, i.e.,
- * each data point is annotated with the id of the final cluster (center) it belongs to.
- *
- * <p>Input files are plain text files and must be formatted as follows:
- * <ul>
- * <li>Data points are represented as two double values separated by a blank character.
- * Data points are separated by newline characters.<br>
- * For example <code>"1.2 2.3\n5.3 7.2\n"</code> gives two data points (x=1.2, y=2.3) and (x=5.3, y=7.2).
- * <li>Cluster centers are represented by an integer id and a point value.<br>
- * For example <code>"1 6.2 3.2\n2 2.9 5.7\n"</code> gives two centers (id=1, x=6.2, y=3.2) and (id=2, x=2.9, y=5.7).
- * </ul>
- *
- * <p>Usage: <code>KMeans --points &lt;path&gt; --centroids &lt;path&gt; --output &lt;path&gt; <br>--iterations &lt;n&gt; --d &lt;n dimensions&gt;</code><br>
- *
- * <p>This example shows how to use:
- * <ul>
- * <li>Bulk iterations
- * <li>Broadcast variables in bulk iterations
- * <li>Custom Java objects (POJOs)
- * </ul>
+ * Usage: KMeansTI
+ *          --points <path>
+ *          --centroids <path>
+ *          --output <path>
+ *          --iterations <n iterations>
+ *          --d <n dimensions>
  */
 
 @SuppressWarnings("serial")
@@ -120,8 +96,8 @@ public class KMeansTI {
         /*
          *   APPROACH #1
          */
-        /*
-        IterativeDataSet<Centroid> cLoop = centroids.iterate(iterations);
+
+        /*IterativeDataSet<Centroid> cLoop = centroids.iterate(iterations);
 
         DeltaIteration<Tuple2<Integer, Point>, Centroid> iteration = nullClusteredPoints.iterateDelta(centroids, iterations, 0);
 
@@ -139,9 +115,9 @@ public class KMeansTI {
                 .map(new CentroidAverager())
                 ;
 
-        DataSet<Tuple2<Integer, Point>> clusteredPoints = iteration.closeWith(partialClusteredPoints, newCentroids);
+        DataSet<Tuple2<Integer, Point>> clusteredPoints = iteration.closeWith(partialClusteredPoints, newCentroids); */
 
-         */
+
 
         /*
          *   APPROACH #2
@@ -187,7 +163,16 @@ public class KMeansTI {
 
         LOG.error("Main executed");
 
-        matrix.print();
+        double[][] icd = matrix.collect().get(0);
+        System.out.println("iCD er: ");
+
+        for (int i = 0; i < icd.length; i++) {
+            for (int j = 0; j < icd.length; j++) {
+                System.out.print(icd[i][j] + "\t");
+            }
+
+            System.out.println("");
+        }
 
         DataSet<Tuple2<Integer, Point>> nullClusteredPoints = points
                 .map(new assignPointToNullCluster());
@@ -195,23 +180,25 @@ public class KMeansTI {
         nullClusteredPoints.writeAsText("file:///home/ola/code/kmeans-ti/data/tempout.txt", WriteMode.OVERWRITE)
                 .setParallelism(1);
 
+        // Loop begins here
         IterativeDataSet<Centroid> loop = centroids.iterate(iterations);
 
+        DataSet<Tuple2<Integer, Point>> pointsReadFromDisk = nullClusteredPoints;
+
         // Asssigning each point to the nearest centroid
-        DataSet<Tuple2<Integer, Point>> partialClusteredPoints = nullClusteredPoints
-                // compute closest centroid for each point
+        DataSet<Tuple2<Integer, Point>> partialClusteredPoints = pointsReadFromDisk
+                // Compute closest centroid for each point
                 .map(new SelectNearestCenter())
                 .withBroadcastSet(loop, "centroids");
 
         DataSet<Centroid> newCentroids = partialClusteredPoints
-                // count and sum point coordinates for each centroid
+                // Count and sum point coordinates for each centroid
                 .map(new CountAppender())
                 .groupBy(0).reduce(new CentroidAccumulator())
-
-                // compute new centroids from point counts and coordinate sums
+                // Compute new centroids from point counts and coordinate sums
                 .map(new CentroidAverager());
 
-        // feed new centroids back into next iteration
+        // Loop ends here. Feed new centroids back into next iteration
         DataSet<Centroid> finalCentroids = loop.closeWith(newCentroids);
 
         DataSet<Tuple2<Integer, Point>> clusteredPoints = nullClusteredPoints
@@ -264,118 +251,7 @@ public class KMeansTI {
         return points;
     }
 
-    // *************************************************************************
-    //     DATA TYPES
-    // *************************************************************************
 
-    /**
-     * A n-dimensional point.
-     */
-    public static class Point implements Serializable {
-
-        public double[] features;
-        public int dimension;
-
-        /** A public no-argument constructor is required for POJOs (Plain Old Java Objects) */
-        public Point() {}
-
-        /** A public constructor that takes the features, represented as an array of doubles as the argument */
-        public Point(double[] features) {
-            this.features = features;
-            this.dimension = features.length;
-        }
-
-        /** Function that adds this point with any given point */
-        public Point add(Point other) {
-            for(int i = 0; i < dimension; i++) {
-                features[i] += other.features[i];
-            }
-
-            return this;
-        }
-
-        /** Function that divides this point with a given value */
-        public Point div(long val) {
-            for(int i = 0; i < dimension; i++) {
-                features[i] /= val;
-            }
-            return this;
-        }
-
-        /** Function that return the euclidian distance between this point and any given point */
-        public double euclideanDistance(Point other) {
-            double dist = 0;
-
-            for(int i = 0; i < dimension; i++) {
-                dist += Math.pow((features[i] - other.features[i]), 2.0);
-            }
-
-            return Math.sqrt(dist);
-            //return new EuclideanDistance().compute(features, other.features);
-        }
-
-        /** Function to clear / null-out the point */
-        public void clear() {
-            for(int i = 0; i < dimension; i++) {
-                features[i] = 0.0;
-            }
-        }
-
-        /** Function to represent the point in a string */
-        @Override
-        public String toString() {
-            StringBuilder s = new StringBuilder();
-
-            for(int i = 0; i < dimension; i++) {
-                if (i < dimension-1) {
-                    s.append(features[i]).append(" ");
-                } else {
-                    s.append(features[i]);
-                }
-            }
-
-            return s.toString();
-        }
-    }
-
-    /**
-     * A n-dimensional centroid, basically a point with an ID.
-     */
-    public static class Centroid extends Point implements Comparable<Centroid>{
-
-        /** The ID of an centroid, which also represents the cluster */
-        public int id;
-
-        /** A public no-argument constructor is required for POJOs (Plain Old Java Objects) */
-        public Centroid() {}
-
-        /** A public constructor that takes an id and the features, represented as an array as the arguments */
-        public Centroid(int id, double[] features) {
-            super(features);
-            this.id = id;
-        }
-
-        /** A public constructor that takes an id and a Point as the arguments */
-        public Centroid(int id, Point p) {
-            super(p.features);
-            this.id = id;
-        }
-
-        public Integer getID() {
-            return id;
-        }
-
-        /** A method to allow for comparing the ID of two different centroids */
-        public int compareTo(Centroid c) {
-            return this.getID().compareTo(c.getID());
-        }
-
-        /** Function to represent the point in a string */
-        @Override
-        public String toString() {
-            return id + ", " + super.toString();
-        }
-    }
 
     // *************************************************************************
     //     USER FUNCTIONS
@@ -505,14 +381,12 @@ public class KMeansTI {
 
         @Override
         public void reduce(Iterable<Centroid> iterable, Collector<double[][]> collector) throws Exception {
-            LOG.error("Function executed");
-
             List<Centroid> l = new ArrayList<>();
 
-            for(Centroid c : iterable) {
-                l.add(c);
-            }
+            // Add iterable to List in order to simplify nested loops below
+            for(Centroid c : iterable) { l.add(c); }
 
+            // Store the size of the List, which is used in allocation of array below
             int dims = l.size();
 
             // Ensure that the centroids are sorted in ascending order on their ID
@@ -521,27 +395,26 @@ public class KMeansTI {
             // Allocate the multidimensional array
             double[][] matrix = new double[dims][dims];
 
+            // Computes the distances between every centroid and place them in List l
             for(int i = 0; i < l.size(); i++) {
                 Centroid ci = l.get(i);
 
                 for(int j = 0; j < l.size(); j++) {
                     Centroid cj = l.get(j);
-
                     double dist = ci.euclideanDistance(cj);
-
                     matrix[i][j] = dist;
 
-                    System.out.println("Dist between " + i + " & " + j + " is: " + dist);
+                    //System.out.println("Dist between " + i + " & " + j + " is: " + dist);
                 }
             }
 
             // Only used for debugging
-            for(int i = 0; i < matrix.length; i++) {
+            /*for(int i = 0; i < matrix.length; i++) {
                 for(int j = 0; j < matrix[i].length; j++) {
                     System.out.print(matrix[i][j] + " ");
                 }
                 System.out.println("");
-            }
+            }*/
 
             collector.collect(matrix);
         }
