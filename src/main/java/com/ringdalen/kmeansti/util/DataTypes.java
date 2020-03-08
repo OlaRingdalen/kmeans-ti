@@ -112,7 +112,7 @@ public class DataTypes {
         /** Function to represent the point in a string */
         @Override
         public String toString() {
-            return id + ", " + super.toString();
+            return id + " " + super.toString();
         }
     }
 }
