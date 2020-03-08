@@ -104,7 +104,7 @@ public class DataTypes {
             return id;
         }
 
-        /** A method to allow for comparing the ID of two different centroids */
+        /** A method to allow for comparing the ID of two different centroids. Used for sorting */
         public int compareTo(Centroid c) {
             return this.getID().compareTo(c.getID());
         }
@@ -114,5 +114,18 @@ public class DataTypes {
         public String toString() {
             return id + " " + super.toString();
         }
+    }
+
+    /**
+     * A class used to store information that will be carried over to the next iteration.
+     * COI is an abbreviation of "Carry-Over-Information"
+     */
+    public static class COI implements Serializable {
+        public double[][] iCD;
+        public double[] minCD;
+        public double[] distMap;
+
+        public COI() {};
+
     }
 }

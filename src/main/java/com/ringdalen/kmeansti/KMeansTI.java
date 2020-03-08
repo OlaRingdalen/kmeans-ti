@@ -2,6 +2,7 @@ package com.ringdalen.kmeansti;
 
 import com.ringdalen.kmeansti.util.DataTypes.Point;
 import com.ringdalen.kmeansti.util.DataTypes.Centroid;
+import com.ringdalen.kmeansti.util.DataTypes.COI;
 
 import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.java.DataSet;
@@ -12,6 +13,8 @@ import org.apache.flink.api.java.operators.DeltaIteration;
 import org.apache.flink.api.java.operators.IterativeDataSet;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
+import org.apache.flink.api.java.tuple.Tuple4;
+import org.apache.flink.api.java.tuple.Tuple5;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileSystem.WriteMode;
@@ -54,8 +57,8 @@ public class KMeansTI {
 
         // get input data:
         // read the points and centroids from the provided paths or fall back to default data
-        DataSet<Point> points = getPointDataSet(params, env);
-        DataSet<Centroid> centroids = getCentroidDataSet(params, env);
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> points = getPointDataSet(params, env);
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> centroids = getCentroidDataSet(params, env);
 
         // Fetching the number of iterations that the program is executed with
         int iterations = params.getInt("iterations", 10);
@@ -77,33 +80,52 @@ public class KMeansTI {
             System.out.println("");
         }*/
 
-        DataSet<Tuple2<Integer, Point>> nullClusteredPoints = points
-                .map(new assignPointToNullCluster());
+        /** f0: Key; 0 -> Centroid, 1 -> Point, 2 -> COI
+         *  f1: ID of cluster Point is assigned to
+         *  f2: Centroid or null
+         *  f3: Point or null
+         *  f4: COI or null
+         * */
+
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> allData = points.union(centroids);
+
+        /*DataSet<Tuple2<Integer, Point>> nullClusteredPoints = points
+                .map(new assignPointToNullCluster());*/
 
         // Loop begins here
-        IterativeDataSet<Centroid> loop = centroids.iterate(iterations);
+        IterativeDataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> loop = allData.iterate(iterations);
+
+        DataSet<Tuple2<Integer, Point>> pointsFromLastIteration = loop.filter(new PointFilter()).project(1, 3);
+        DataSet<Centroid> centroidsFromLastIteration = loop.filter(new CentroidFilter()).map(new ExtractCentroids());
 
         // Asssigning each point to the nearest centroid
-        DataSet<Tuple2<Integer, Point>> partialClusteredPoints = nullClusteredPoints
+        DataSet<Tuple2<Integer, Point>> partialClusteredPoints = pointsFromLastIteration
                 // Compute closest centroid for each point
                 .map(new SelectNearestCenter())
-                .withBroadcastSet(loop, "centroids");
+                .withBroadcastSet(centroidsFromLastIteration, "centroids");
 
         // Producing new centroids based on the clustered points
-        DataSet<Centroid> newCentroids = partialClusteredPoints
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> newCentroids = partialClusteredPoints
                 // Count and sum point coordinates for each centroid
                 .map(new CountAppender())
                 .groupBy(0).reduce(new CentroidAccumulator())
                 // Compute new centroids from point counts and coordinate sums
                 .map(new CentroidAverager());
 
-        // Loop ends here. Feed new centroids back into next iteration
-        DataSet<Centroid> finalCentroids = loop.closeWith(newCentroids);
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> pointsToNextIteration = partialClusteredPoints.map(new ExpandPointsTuple());
+        //DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> centroidsToNextIteration = newCentroids.map(new ExpandCentroidsTuple());
 
-        DataSet<Tuple2<Integer, Point>> clusteredPoints = nullClusteredPoints
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> toNextIteration = pointsToNextIteration.union(newCentroids);
+
+        // Loop ends here. Feed new centroids back into next iteration
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> finalOutput = loop.closeWith(toNextIteration);
+
+        /*DataSet<Tuple2<Integer, Point>> clusteredPoints = nullClusteredPoints
                 // assign points to final clusters
                 .map(new SelectNearestCenter())
-                .withBroadcastSet(finalCentroids, "centroids");
+                .withBroadcastSet(finalCentroids, "centroids");*/
+
+        DataSet<Tuple2<Integer, Point>> clusteredPoints = finalOutput.filter(new PointFilter()).project(1, 3);
 
 
         // emit result
@@ -125,9 +147,10 @@ public class KMeansTI {
     /**
      * Function to map data from a file to Centroid objects
      */
-    private static DataSet<Centroid> getCentroidDataSet(ParameterTool params, ExecutionEnvironment env) {
+    private static DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>>
+    getCentroidDataSet(ParameterTool params, ExecutionEnvironment env) {
 
-        DataSet<Centroid> centroids;
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> centroids;
 
         // Parsing d features, plus the ID (thats why the +1 is included) from file to Centroid objects
         centroids = env.readTextFile(params.get("centroids"))
@@ -139,9 +162,10 @@ public class KMeansTI {
     /**
      * Function to map data from a file to Point objects
      */
-    private static DataSet<Point> getPointDataSet(ParameterTool params, ExecutionEnvironment env) {
+    private static DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>>
+    getPointDataSet(ParameterTool params, ExecutionEnvironment env) {
 
-        DataSet<Point> points;
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> points;
 
         // Parsing d features from file to Point objects
         points = env.readTextFile(params.get("points"))
@@ -150,28 +174,56 @@ public class KMeansTI {
         return points;
     }
 
-    /**
-     * Function to map partial clustered points to a Tuple2
-     */
-    private static DataSet<Tuple2<Integer, Point>> getPartialClusteredPoints(String filePath, int d, ExecutionEnvironment env) {
-
-        DataSet<Tuple2<Integer, Point>> partialClusteredPoints;
-
-        // Parsing d features from file to Point objects
-        partialClusteredPoints = env.readTextFile(filePath)
-                .map(new ReadPartialClusteredPoints(d));
-
-        return partialClusteredPoints;
-    }
-
-
-
     // *************************************************************************
     //     USER FUNCTIONS
     // *************************************************************************
 
+    public static class ExtractCentroids implements MapFunction<Tuple5<Integer, Integer, Centroid, Point, COI>, Centroid> {
+
+        @Override
+        public Centroid map(Tuple5<Integer, Integer, Centroid, Point, COI> allData) throws Exception {
+            return allData.f2;
+        }
+    }
+
+    public static class PointFilter implements FilterFunction<Tuple5<Integer, Integer, Centroid, Point, COI>> {
+
+        @Override
+        public boolean filter(Tuple5<Integer, Integer, Centroid, Point, COI> allData) throws Exception {
+            // Only return true if the key is equal to one, which means this is a point
+            return (allData.f0 == 1);
+        }
+    }
+
+    public static class CentroidFilter implements FilterFunction<Tuple5<Integer, Integer, Centroid, Point, COI>> {
+
+        @Override
+        public boolean filter(Tuple5<Integer, Integer, Centroid, Point, COI> allData) throws Exception {
+            // Only return true if the key is equal to zero, which means this is a centroid
+            return (allData.f0 == 0);
+        }
+    }
+
+    public static class ExpandPointsTuple implements MapFunction<Tuple2<Integer, Point>, Tuple5<Integer, Integer, Centroid, Point, COI>> {
+
+        @Override
+        public Tuple5<Integer, Integer, Centroid, Point, COI> map(Tuple2<Integer, Point> point) throws Exception {
+
+            return new Tuple5<>(1, point.f0, null, point.f1, null);
+        }
+    }
+
+    public static class ExpandCentroidsTuple implements MapFunction<Centroid, Tuple5<Integer, Integer, Centroid, Point, COI>> {
+
+        @Override
+        public Tuple5<Integer, Integer, Centroid, Point, COI> map(Centroid centroid) throws Exception {
+
+            return new Tuple5<>(1, 0, centroid, null, null);
+        }
+    }
+
     /** Reads the input data and generate points */
-    public static class ReadPointData implements MapFunction<String, Point> {
+    public static class ReadPointData implements MapFunction<String, Tuple5<Integer, Integer, Centroid, Point, COI>> {
         double[] row;
 
         public ReadPointData(int d){
@@ -179,19 +231,20 @@ public class KMeansTI {
         }
 
         @Override
-        public Point map(String s) throws Exception {
+        public Tuple5<Integer, Integer, Centroid, Point, COI> map(String s) throws Exception {
             String[] buffer = s.split(" ");
 
             for(int i = 0; i < row.length; i++) {
                 row[i] = Double.parseDouble(buffer[i]);
             }
 
-            return new Point(row);
+            //return new Point(row);
+            return new Tuple5<>(1, 0, null, new Point(row), null);
         }
     }
 
     /** Reads the input data and generate centroids */
-    public static class ReadCentroidData implements MapFunction<String, Centroid> {
+    public static class ReadCentroidData implements MapFunction<String, Tuple5<Integer, Integer, Centroid, Point, COI>> {
         double[] row;
 
         public ReadCentroidData(int d){
@@ -200,7 +253,7 @@ public class KMeansTI {
         }
 
         @Override
-        public Centroid map(String s) throws Exception {
+        public Tuple5<Integer, Integer, Centroid, Point, COI> map(String s) throws Exception {
             String[] buffer = s.split(" ");
             int id = Integer.parseInt(buffer[0]);
 
@@ -209,31 +262,8 @@ public class KMeansTI {
                 row[i] = Double.parseDouble(buffer[i+1]);
             }
 
-            return new Centroid(id, row);
-        }
-    }
-
-    /** Reads the partial clustered points and and return a Tuple2 with the ID and point */
-    public static class ReadPartialClusteredPoints implements MapFunction<String, Tuple2<Integer, Point>> {
-        double[] row;
-
-        public ReadPartialClusteredPoints(int d){
-            row = new double[d];
-        }
-
-        @Override
-        public Tuple2<Integer, Point> map(String s) throws Exception {
-            String[] buffer = s.split(" ");
-            int id = Integer.parseInt(buffer[0]);
-
-            // buffer is +1 since this array is one longer
-            for(int i = 0; i < row.length; i++) {
-                row[i] = Double.parseDouble(buffer[i+1]);
-            }
-
-            LOG.error("Reading from disk!");
-
-            return new Tuple2<>(id, new Point(row));
+            //return new Centroid(id, row);
+            return new Tuple5<>(0, 0, new Centroid(id, row), null, null);
         }
     }
 
@@ -294,13 +324,15 @@ public class KMeansTI {
     }
 
     /** Computes new centroid from coordinate sum and count of points. */
-    @ForwardedFields("0->id")
-    public static final class CentroidAverager implements MapFunction<Tuple3<Integer, Point, Long>, Centroid> {
+    public static final class CentroidAverager implements MapFunction<Tuple3<Integer, Point, Long>, Tuple5<Integer, Integer, Centroid, Point, COI>> {
 
         @Override
-        public Centroid map(Tuple3<Integer, Point, Long> value) {
-            return new Centroid(value.f0, value.f1.div(value.f2));
+        public Tuple5<Integer, Integer, Centroid, Point, COI> map(Tuple3<Integer, Point, Long> value) {
+            Centroid centroid = new Centroid(value.f0, value.f1.div(value.f2));
+            return new Tuple5<>(0, 0, centroid, null, null);
         }
+
+        // DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>>
     }
 
     /** Assigns each point the cluster 0, which does not exist */
