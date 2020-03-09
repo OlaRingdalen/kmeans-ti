@@ -125,7 +125,46 @@ public class DataTypes {
         public double[] minCD;
         public double[] distMap;
 
-        public COI() {};
+        public COI(double[][] iCD, double[] minCD, double[] distMap) {
+            this.iCD = iCD;
+            this.minCD = minCD;
+            this.distMap = distMap;
+        }
+
+        // Print function used for debugging purposes
+        @Override
+        public String toString() {
+            StringBuilder s = new StringBuilder();
+            int dimension = minCD.length;
+
+            s.append("\n\nThe matrix is:\n");
+            for(int i = 0; i < iCD.length; i++) {
+                for(int j = 0; j < iCD[i].length; j++) {
+                    s.append(iCD[i][j] + " ");
+                }
+                s.append("\n");
+            }
+
+            s.append("\n\nThe minCD is:\n");
+            for(int i = 0; i < dimension; i++) {
+                if (i < dimension-1) {
+                    s.append(minCD[i]).append(" ");
+                } else {
+                    s.append(minCD[i]);
+                }
+            }
+
+            s.append("\n\nThe distMap is:\n");
+            for(int i = 0; i < dimension; i++) {
+                if (i < dimension-1) {
+                    s.append(distMap[i]).append(" ");
+                } else {
+                    s.append(distMap[i]);
+                }
+            }
+
+            return s.toString();
+        }
 
     }
 }

@@ -9,7 +9,6 @@ import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.functions.FunctionAnnotation.ForwardedFields;
 import org.apache.flink.api.java.operators.DataSink;
-import org.apache.flink.api.java.operators.DeltaIteration;
 import org.apache.flink.api.java.operators.IterativeDataSet;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
@@ -17,7 +16,6 @@ import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.tuple.Tuple5;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.FileSystem.WriteMode;
 import org.apache.flink.util.Collector;
 
 import java.io.Serializable;
@@ -64,21 +62,13 @@ public class KMeansTI {
         int iterations = params.getInt("iterations", 10);
         int dimension = params.getInt("d");
 
-        // Computing the iCD
-        /*DataSet<double[][]> matrix = centroids.reduceGroup(new computeCentroidInterDistance());
+        DataSet<Centroid> testCentroids = centroids.filter(new CentroidFilter()).map(new ExtractCentroids());
 
-        LOG.error("Main executed");
+        // Computing the COI information
+        DataSet<COI> matrix = testCentroids.reduceGroup(new computeCentroidInterDistance())
+                .withBroadcastSet(testCentroids, "oldCentroids");
 
-        double[][] icd = matrix.collect().get(0);
-        System.out.println("iCD er: ");
-
-        for (int i = 0; i < icd.length; i++) {
-            for (int j = 0; j < icd.length; j++) {
-                System.out.print(icd[i][j] + "\t");
-            }
-
-            System.out.println("");
-        }*/
+        matrix.print();
 
         /** f0: Key; 0 -> Centroid, 1 -> Point, 2 -> COI
          *  f1: ID of cluster Point is assigned to
@@ -87,14 +77,13 @@ public class KMeansTI {
          *  f4: COI or null
          * */
 
+        // Combine the points and centroids datasets to one dataset
         DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> allData = points.union(centroids);
-
-        /*DataSet<Tuple2<Integer, Point>> nullClusteredPoints = points
-                .map(new assignPointToNullCluster());*/
 
         // Loop begins here
         IterativeDataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> loop = allData.iterate(iterations);
 
+        // Separate out points and centroids to own dataset in order to perform computations on them
         DataSet<Tuple2<Integer, Point>> pointsFromLastIteration = loop.filter(new PointFilter()).project(1, 3);
         DataSet<Centroid> centroidsFromLastIteration = loop.filter(new CentroidFilter()).map(new ExtractCentroids());
 
@@ -346,46 +335,85 @@ public class KMeansTI {
     }
 
     /** Takes all centroids and computes centroid inter-distances */
-    public static class computeCentroidInterDistance implements GroupReduceFunction<Centroid, double[][]> {
+    public static class computeCentroidInterDistance extends RichGroupReduceFunction<Centroid, COI> {
+        private Collection<Centroid> centroidCollection;
+
+        /** Reads the centroid values from a broadcast variable into a collection. */
+        @Override
+        public void open(Configuration parameters) throws Exception {
+            this.centroidCollection = getRuntimeContext().getBroadcastVariable("oldCentroids");
+        }
 
         @Override
-        public void reduce(Iterable<Centroid> iterable, Collector<double[][]> collector) throws Exception {
-            List<Centroid> l = new ArrayList<>();
+        public void reduce(Iterable<Centroid> iterable, Collector<COI> collector) throws Exception {
+            // Instantiate list to store current / new centroids
+            List<Centroid> newCentroids = new ArrayList<>();
 
-            // Add iterable to List in order to simplify nested loops below
-            for(Centroid c : iterable) { l.add(c); }
+            // Convert Collection centroidCollection to ArrayList
+            List<Centroid> oldCentroids = new ArrayList<>(centroidCollection);
+
+            // Convert Iterable iterable to ArrayList by adding to existing list instantiated above
+            for(Centroid c : iterable) {
+                newCentroids.add(c);
+            }
 
             // Store the size of the List, which is used in allocation of array below
-            int dims = l.size();
+            int dims = newCentroids.size();
 
             // Ensure that the centroids are sorted in ascending order on their ID
-            Collections.sort(l);
+            Collections.sort(newCentroids);
 
             // Allocate the multidimensional array
             double[][] matrix = new double[dims][dims];
+            double[] minCD = new double[dims];
+            double[] distMap = new double[dims];
 
             // Computes the distances between every centroid and place them in List l
-            for(int i = 0; i < l.size(); i++) {
-                Centroid ci = l.get(i);
+            for(int i = 0; i < newCentroids.size(); i++) {
+                double minVal = Double.MAX_VALUE;
 
-                for(int j = 0; j < l.size(); j++) {
-                    Centroid cj = l.get(j);
-                    double dist = ci.euclideanDistance(cj);
-                    matrix[i][j] = dist;
+                // This represents the outer centroid
+                Centroid ci = newCentroids.get(i);
 
-                    //System.out.println("Dist between " + i + " & " + j + " is: " + dist);
+                for(int j = 0; j < newCentroids.size(); j++) {
+
+                    // Check that k != k'
+                    if (i != j) {
+
+                        // This represents the inne centroid
+                        Centroid cj = newCentroids.get(j);
+
+                        // Calculate the distance between the two centroids
+                        double dist = ci.euclideanDistance(cj);
+
+                        // Update the matrix with the distance
+                        matrix[i][j] = dist;
+
+                        // Look for the smallest value and update if smaller
+                        if (dist < minVal) {
+                            minVal = dist;
+                        }
+
+                    } else {
+                        // If k == k', distance is automatically 0
+                        matrix[i][j] = 0;
+                    }
                 }
+
+                // Update minCD with 0.5 of minVal
+                minCD[i] = (minVal / 2);
             }
 
-            // Only used for debugging
-            /*for(int i = 0; i < matrix.length; i++) {
-                for(int j = 0; j < matrix[i].length; j++) {
-                    System.out.print(matrix[i][j] + " ");
-                }
-                System.out.println("");
-            }*/
+            // Produce the distMap
+            for (int i = 0; i < dims; i++) {
+                distMap[i] = newCentroids.get(i).euclideanDistance(oldCentroids.get(i));
+            }
 
-            collector.collect(matrix);
+            // Make the new COI object
+            COI coi = new COI(matrix, minCD, distMap);
+
+            // Add it to the collector which will return it
+            collector.collect(coi);
         }
     }
 }
