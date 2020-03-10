@@ -55,46 +55,44 @@ public class KMeansTI {
 
         // get input data:
         // read the points and centroids from the provided paths or fall back to default data
-        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> points = getPointDataSet(params, env);
-        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> centroids = getCentroidDataSet(params, env);
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> pointsTuple = getPointDataSet(params, env);
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> centroidsTuple = getCentroidDataSet(params, env);
 
         // Fetching the number of iterations that the program is executed with
         int iterations = params.getInt("iterations", 10);
         int dimension = params.getInt("d");
 
-        DataSet<Centroid> testCentroids = centroids.filter(new CentroidFilter()).map(new ExtractCentroids());
+        DataSet<Centroid> centroids = centroidsTuple.filter(new CentroidFilter()).map(new ExtractCentroids());
 
         // Computing the COI information
-        DataSet<COI> matrix = testCentroids.reduceGroup(new computeCentroidInterDistance())
-                .withBroadcastSet(testCentroids, "oldCentroids");
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> coiTuple = centroids.reduceGroup(new computeCOIInformation())
+                .withBroadcastSet(centroids, "oldCentroids");
 
-        matrix.print();
+        // Combine the points and centroids DataSets to one DataSet
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>>
+                unionData = pointsTuple.union(centroidsTuple.union(coiTuple));
 
-        /** f0: Key; 0 -> Centroid, 1 -> Point, 2 -> COI
-         *  f1: ID of cluster Point is assigned to
-         *  f2: Centroid or null
-         *  f3: Point or null
-         *  f4: COI or null
-         * */
+        // ************************************************************************************************************
+        //  Loop begins here
+        // ************************************************************************************************************
 
-        // Combine the points and centroids datasets to one dataset
-        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> allData = points.union(centroids);
+        // Use unionData to iterate on for n iterations, as specified in the input arguments
+        IterativeDataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> loop = unionData.iterate(iterations);
 
-        // Loop begins here
-        IterativeDataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> loop = allData.iterate(iterations);
-
-        // Separate out points and centroids to own dataset in order to perform computations on them
+        // Separate out points, centroids and COI information to separate DataSets in order to perform computations on them
         DataSet<Tuple2<Integer, Point>> pointsFromLastIteration = loop.filter(new PointFilter()).project(1, 3);
         DataSet<Centroid> centroidsFromLastIteration = loop.filter(new CentroidFilter()).map(new ExtractCentroids());
+        DataSet<COI> coiFromLastIteration = loop.filter(new COIFilter()).map(new ExtractCOI());
 
         // Asssigning each point to the nearest centroid
         DataSet<Tuple2<Integer, Point>> partialClusteredPoints = pointsFromLastIteration
                 // Compute closest centroid for each point
                 .map(new SelectNearestCenter())
-                .withBroadcastSet(centroidsFromLastIteration, "centroids");
+                .withBroadcastSet(centroidsFromLastIteration, "centroids")
+                .withBroadcastSet(coiFromLastIteration, "coi");
 
         // Producing new centroids based on the clustered points
-        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> newCentroids = partialClusteredPoints
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> centroidsToNextIteration = partialClusteredPoints
                 // Count and sum point coordinates for each centroid
                 .map(new CountAppender())
                 .groupBy(0).reduce(new CentroidAccumulator())
@@ -104,15 +102,24 @@ public class KMeansTI {
         DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> pointsToNextIteration = partialClusteredPoints.map(new ExpandPointsTuple());
         //DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> centroidsToNextIteration = newCentroids.map(new ExpandCentroidsTuple());
 
-        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> toNextIteration = pointsToNextIteration.union(newCentroids);
+        // Separate out centroids in order to be used in calculation for
+        DataSet<Centroid> singleNewCentroids = centroidsToNextIteration.filter(new CentroidFilter()).map(new ExtractCentroids());
 
-        // Loop ends here. Feed new centroids back into next iteration
+        // Computing the new COI information
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>>
+                coiToNextIteration = singleNewCentroids.reduceGroup(new computeCOIInformation())
+                .withBroadcastSet(centroidsFromLastIteration, "oldCentroids");
+
+        // Combine points, centroids and coi DataSets to one DataSet
+        DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>>
+                toNextIteration = pointsToNextIteration.union(centroidsToNextIteration.union(coiToNextIteration));
+
+        // Ending the loop and feeding back DataSet
         DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> finalOutput = loop.closeWith(toNextIteration);
 
-        /*DataSet<Tuple2<Integer, Point>> clusteredPoints = nullClusteredPoints
-                // assign points to final clusters
-                .map(new SelectNearestCenter())
-                .withBroadcastSet(finalCentroids, "centroids");*/
+        // ************************************************************************************************************
+        //  Loop ends here. Feed new centroids back into next iteration
+        // ************************************************************************************************************
 
         DataSet<Tuple2<Integer, Point>> clusteredPoints = finalOutput.filter(new PointFilter()).project(1, 3);
 
@@ -167,29 +174,72 @@ public class KMeansTI {
     //     USER FUNCTIONS
     // *************************************************************************
 
+    /**
+     * This class implements the FilterFunction in order to filter out Tuple5's with Centroid
+     */
+    public static class CentroidFilter implements FilterFunction<Tuple5<Integer, Integer, Centroid, Point, COI>> {
+
+        /**
+         * Filter out Tuple5 that does not have the key 0, whcih means that the Tuple does not contain a
+         * Centroid object.
+         *
+         * @param unionData Tuple5 with all unionData
+         * @return boolean True if f0-field (key) is equal to 0, else return False
+         */
+        @Override
+        public boolean filter(Tuple5<Integer, Integer, Centroid, Point, COI> unionData) throws Exception {
+            return (unionData.f0 == 0);
+        }
+    }
+
+    /**
+     * This class implements the FilterFunction in order to filter out Tuple5's with Point
+     */
+    public static class PointFilter implements FilterFunction<Tuple5<Integer, Integer, Centroid, Point, COI>> {
+
+        /**
+         * Filter out Tuple5 that does not have the key 0, whcih means that the Tuple does not contain a
+         * Point object.
+         *
+         * @param unionData Tuple5 with all unionData
+         * @return boolean True if f0-field (key) is equal to 1, else return False
+         */
+        @Override
+        public boolean filter(Tuple5<Integer, Integer, Centroid, Point, COI> unionData) throws Exception {
+            return (unionData.f0 == 1);
+        }
+    }
+
+    /**
+     * This class implements the FilterFunction in order to filter out Tuple5's with COI
+     */
+    public static class COIFilter implements FilterFunction<Tuple5<Integer, Integer, Centroid, Point, COI>> {
+
+        /**
+         * Filter out Tuple5 that does not have the key 2, which means the Tuple does not contain a COI object.
+         *
+         * @param unionData Tuple5 with all unionData
+         * @return boolean True if f0-field (key) is equal to 2, else return False
+         */
+        @Override
+        public boolean filter(Tuple5<Integer, Integer, Centroid, Point, COI> unionData) throws Exception {
+            return (unionData.f0 == 2);
+        }
+    }
+
+    public static class ExtractCOI implements MapFunction<Tuple5<Integer, Integer, Centroid, Point, COI>, COI> {
+
+        @Override
+        public COI map(Tuple5<Integer, Integer, Centroid, Point, COI> COIData) throws Exception {
+            return COIData.f4;
+        }
+    }
+
     public static class ExtractCentroids implements MapFunction<Tuple5<Integer, Integer, Centroid, Point, COI>, Centroid> {
 
         @Override
-        public Centroid map(Tuple5<Integer, Integer, Centroid, Point, COI> allData) throws Exception {
-            return allData.f2;
-        }
-    }
-
-    public static class PointFilter implements FilterFunction<Tuple5<Integer, Integer, Centroid, Point, COI>> {
-
-        @Override
-        public boolean filter(Tuple5<Integer, Integer, Centroid, Point, COI> allData) throws Exception {
-            // Only return true if the key is equal to one, which means this is a point
-            return (allData.f0 == 1);
-        }
-    }
-
-    public static class CentroidFilter implements FilterFunction<Tuple5<Integer, Integer, Centroid, Point, COI>> {
-
-        @Override
-        public boolean filter(Tuple5<Integer, Integer, Centroid, Point, COI> allData) throws Exception {
-            // Only return true if the key is equal to zero, which means this is a centroid
-            return (allData.f0 == 0);
+        public Centroid map(Tuple5<Integer, Integer, Centroid, Point, COI> unionData) throws Exception {
+            return unionData.f2;
         }
     }
 
@@ -260,21 +310,28 @@ public class KMeansTI {
     @ForwardedFields("f1")
     public static final class SelectNearestCenter extends RichMapFunction<Tuple2<Integer, Point>, Tuple2<Integer, Point>> {
         private Collection<Centroid> centroids;
+        private Collection<COI> coi;
 
         /** Reads the centroid values from a broadcast variable into a collection. */
         @Override
         public void open(Configuration parameters) throws Exception {
             this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
+            this.coi = getRuntimeContext().getBroadcastVariable("coi");
         }
 
         @Override
         public Tuple2<Integer, Point> map(Tuple2<Integer, Point> p) throws Exception {
+
+            // UNPACK COI HERE
 
             double minDistance = Double.MAX_VALUE;
             int closestCentroidId = -1;
 
             // check all cluster centers
             for (Centroid centroid : centroids) {
+
+                // CHECK IF DISTANCE(THIS CENTROID AND P'S CURRENT ASSIGNED CENTROID)  >= 2 * MIN_DIST
+
                 // compute distance
                 double distance = p.f1.euclideanDistance(centroid);
 
@@ -335,7 +392,7 @@ public class KMeansTI {
     }
 
     /** Takes all centroids and computes centroid inter-distances */
-    public static class computeCentroidInterDistance extends RichGroupReduceFunction<Centroid, COI> {
+    public static class computeCOIInformation extends RichGroupReduceFunction<Centroid, Tuple5<Integer, Integer, Centroid, Point, COI>> {
         private Collection<Centroid> centroidCollection;
 
         /** Reads the centroid values from a broadcast variable into a collection. */
@@ -345,7 +402,7 @@ public class KMeansTI {
         }
 
         @Override
-        public void reduce(Iterable<Centroid> iterable, Collector<COI> collector) throws Exception {
+        public void reduce(Iterable<Centroid> iterable, Collector<Tuple5<Integer, Integer, Centroid, Point, COI>> collector) throws Exception {
             // Instantiate list to store current / new centroids
             List<Centroid> newCentroids = new ArrayList<>();
 
@@ -412,8 +469,12 @@ public class KMeansTI {
             // Make the new COI object
             COI coi = new COI(matrix, minCD, distMap);
 
+            //System.out.println(coi);
+
+            Tuple5<Integer, Integer, Centroid, Point, COI> coiTuple = new Tuple5<>(2, 0, null, null, coi);
+
             // Add it to the collector which will return it
-            collector.collect(coi);
+            collector.collect(coiTuple);
         }
     }
 }

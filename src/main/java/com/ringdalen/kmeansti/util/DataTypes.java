@@ -15,6 +15,9 @@ public class DataTypes {
         public double[] features;
         public int dimension;
 
+        public double upperBound;
+        public double[] lowerBound;
+
         /** A public no-argument constructor is required for POJOs (Plain Old Java Objects) */
         public Point() {}
 
@@ -50,7 +53,6 @@ public class DataTypes {
             }
 
             return Math.sqrt(dist);
-            //return new EuclideanDistance().compute(features, other.features);
         }
 
         /** Function to clear / null-out the point */
