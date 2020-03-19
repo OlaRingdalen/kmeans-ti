@@ -25,6 +25,10 @@ public class DataTypes {
         public Point(double[] features) {
             this.features = features;
             this.dimension = features.length;
+            this.upperBound = 0.0;
+
+            // When no value is assigned, the array defaults to only 0's
+            this.lowerBound = new double[dimension];
         }
 
         /** Function that adds this point with any given point */
@@ -42,6 +46,10 @@ public class DataTypes {
                 features[i] /= val;
             }
             return this;
+        }
+
+        public double getLowerBound(int i) {
+            return lowerBound[i];
         }
 
         /** Function that return the euclidian distance between this point and any given point */
@@ -126,11 +134,13 @@ public class DataTypes {
         public double[][] iCD;
         public double[] minCD;
         public double[] distMap;
+        public int k;
 
         public COI(double[][] iCD, double[] minCD, double[] distMap) {
             this.iCD = iCD;
             this.minCD = minCD;
             this.distMap = distMap;
+            this.k = distMap.length;
         }
 
         // Print function used for debugging purposes
