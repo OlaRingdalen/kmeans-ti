@@ -117,7 +117,7 @@ public class KMeansTI {
 
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> pointsToNextIteration = partialClusteredPoints.map(new ExpandPointsTuple());
 
-        // Separate out centroids in order to be used in calculation for
+        // Separate out centroids in order to be used in calculation for COI
         DataSet<Centroid> singleNewCentroids = centroidsToNextIteration.filter(new CentroidFilter()).map(new ExtractCentroids());
 
         // Computing the new COI information
@@ -136,7 +136,7 @@ public class KMeansTI {
         //  Loop ends here. Feed new centroids back into next iteration
         // ************************************************************************************************************
 
-        DataSet<Tuple2<Integer, Point>> clusteredPoints = finalOutput.filter(new PointFilter()).project(1, 3);
+        DataSet<Tuple2<Integer, Point>> clusteredPoints = finalOutput.filter(new PointFilter()).project(1, 2);
 
 
         // emit result
@@ -424,61 +424,87 @@ public class KMeansTI {
         @Override
         public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) throws Exception {
 
-            // UNPACK COI HERE
+            // Unpacking the COI object
             COI coi = new ArrayList<>(coiCollection).get(0);
+
+            // Unpacking the centroids
+            Centroid[] centroidArray =  centroids.toArray(new Centroid[0]);
             Point point = tuple.f1;
 
             double minDistance = Double.MAX_VALUE;
-            int closestCentroidId = -1;
+
+            Integer closestCentroidId = tuple.f0;
             boolean upperBoundUpdated = false;
 
             Double[] currentLb = tuple.f3;
             Double currentUb = tuple.f2;
 
+            Integer centroidID = tuple.f0;
+
             Double[] newLb = currentLb;
             Double newUb = currentUb;
 
             // Calculating k new lower bounds
-            for (int i = 0; i < coi.k-1; i++) {
+            for (int i = 0; i < coi.k - 1; i++) {
                 newLb[i] = Math.max((currentLb[i] - coi.distMap[i]), 0.0);
             }
 
             // Checking if the upperBound need to get updated
-            if(coi.distMap[tuple.f0 - 1] > 0.0) {
+            if (coi.distMap[centroidID - 1] > 0.0) {
 
                 // Updating the upperBound by adding the distance the currently assigned centroid has moved
-                newUb = currentUb + coi.distMap[tuple.f0-1];
+                newUb = currentUb + coi.distMap[centroidID - 1];
                 upperBoundUpdated = true;
             }
 
-            // check all cluster centers
-            for (Centroid centroid : centroids) {
+            double dist1 = 0.0;
+            double dist2 = 0.0;
 
-                // CHECK IF DISTANCE(THIS CENTROID AND P'S CURRENT ASSIGNED CENTROID)  >= 2 * MIN_DIST
-                //  if ((centroid.id != p.f0) && (point.upperBound > point.lowerBound[centroid.id]) && (point.upperBound > coi.iCD[p.f0][centroid.id])) {
-                //  if ((centroid.id != p.f0) && (point.upperBound > point.lowerBound[centroid.id]) && (point.upperBound > coi.iCD[p.f0][centroid.id])) {
-                /*if ((point.upperBound > point.lowerBound[centroid.id-1])) {
+            if (newUb > coi.minCD[centroidID-1]) {
 
+                // check all cluster centers
+                for (Centroid centroid : centroids) {
 
-                } else {
-                    System.out.println("This can be skipped");
-                }*/
+                    // Check if this centroid ID is not current assigned centroid ID
+                    // Check if upper bound is greater than this points lower bound for centroid
+                    // Check if DISTANCE(THIS CENTROID AND P'S CURRENT ASSIGNED CENTROID)  >= 2 * MIN_DIST
+                    if ((centroid.id != closestCentroidId) && (newUb > newLb[centroid.id-1]) && (newUb > coi.iCD[closestCentroidId-1][centroid.id-1])) {
 
-                //point.upperBound // Double
+                        // Do only this is upper bound is updated
+                        if (upperBoundUpdated) {
+                            dist1 = point.euclideanDistance(centroidArray[closestCentroidId-1]);
+                            newUb = dist1;
+                            newLb[closestCentroidId-1] = dist1;
+                            upperBoundUpdated = false;
+                        }
 
-                //double test = point.getLowerBound(0);
+                        dist1 = newUb;
 
-                // PROBLEM: I HAVE NOT COMPUTED LOWER OR UPPER BOUND YET
+                        if (dist1 > newLb[centroid.id-1] || (dist1 > (0.5 * coi.iCD[closestCentroidId-1][centroid.id-1]))) {
+                            dist2 = point.euclideanDistance(centroidArray[centroid.id-1]);
+                            newLb[centroid.id-1] = dist2;
 
-                // compute distance
-                double distance = tuple.f1.euclideanDistance(centroid);
+                            if(dist2 < dist1) {
+                                closestCentroidId = centroid.id;
+                                newUb = dist2;
+                                upperBoundUpdated = false;
+                            }
+                        }
 
-                //System.out.println("AHEEM! Calculated distance between " + p.toString() + " and " + centroid.toString() + " is " + distance);
+                    } /*else {
+                        System.out.println("This can be skipped");
+                    }*/
 
-                // update nearest cluster if necessary
-                if (distance < minDistance) {
-                    minDistance = distance;
-                    closestCentroidId = centroid.id;
+                    // compute distance
+                    //double distance = tuple.f1.euclideanDistance(centroid);
+
+                    //System.out.println("AHEEM! Calculated distance between " + p.toString() + " and " + centroid.toString() + " is " + distance);
+
+                    // update nearest cluster if necessary
+                    //if (distance < minDistance) {
+                     //   minDistance = distance;
+                      //  closestCentroidId = centroid.id;
+                    //}
                 }
             }
 
@@ -523,16 +549,6 @@ public class KMeansTI {
             Double[] emptyDoubleArray = {0.0};
 
             return new Tuple7<>(0, 0, null, emptyDouble, emptyDoubleArray, centroid, null);
-        }
-    }
-
-    /** Assigns each point the cluster 0, which does not exist */
-    @ForwardedFields("*->f1")
-    public final static class assignPointToNullCluster implements MapFunction<Point, Tuple2<Integer, Point>> {
-
-        @Override
-        public Tuple2<Integer, Point> map(Point point) throws Exception {
-            return new Tuple2<>(0, point);
         }
     }
 
@@ -582,7 +598,7 @@ public class KMeansTI {
                     // Check that k != k'
                     if (i != j) {
 
-                        // This represents the inne centroid
+                        // This represents the inner centroid
                         Centroid cj = newCentroids.get(j);
 
                         // Calculate the distance between the two centroids
