@@ -343,7 +343,7 @@ public class KMeansTI {
 
     /** Determines the initial closest cluster to data point. */
     @ForwardedFields("f1")
-    public static final class SelectInitialNearestCenter extends RichMapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple4<Integer, Point, Double, Double[]>> {
+    public static final class SelectInitialNearestCenter2 extends RichMapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple4<Integer, Point, Double, Double[]>> {
         private Collection<Centroid> centroids;
         private Collection<COI> coiCollection;
 
@@ -378,10 +378,15 @@ public class KMeansTI {
                 int centroidRef = centroid.id - 1;
 
                 // Check if this distance calculation can be avoided based on calculation in previous iteration
+                //System.out.println("Skip is: " + skip[0]);
                 if (!skip[centroidRef]) {
 
                     // Compute distance
                     double distance = point.euclideanDistance(centroid);
+
+                    if(distance < 0.0) {
+                        System.out.println("Found minus distance");
+                    }
 
                     // Setting the lower bound (LB)
                     lb[centroidRef] = distance;
@@ -409,7 +414,67 @@ public class KMeansTI {
                 }
             }
 
-            //System.out.println("Point: " + point + "(UB: " + point.upperBound + ")" + "(" + point.lowerBound[0] + ")");
+            System.out.println("Point: " + point + "\t(UB: " + ub + ")" + "(LB: " + lb[0] + ", " + lb[1] + ", " + lb[2] + ")");
+
+            // Emit a new record with the current closest center ID and the data point.
+            return new Tuple4<>(closestCentroidId, point, ub, lb);
+        }
+    }
+
+    /** EXPERIMENTAL VERSION: Determines the initial closest cluster to data point. */
+    @ForwardedFields("f1")
+    public static final class SelectInitialNearestCenter extends RichMapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple4<Integer, Point, Double, Double[]>> {
+        private Collection<Centroid> centroids;
+        private Collection<COI> coiCollection;
+
+        /** Reads the centroid values from a broadcast variable into a collection. */
+        @Override
+        public void open(Configuration parameters) throws Exception {
+            this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
+            this.coiCollection = getRuntimeContext().getBroadcastVariable("coi");
+        }
+
+        @Override
+        public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) throws Exception {
+
+            // UNPACK COI HERE
+            COI coi = new ArrayList<>(coiCollection).get(0);
+            Point point = tuple.f1;
+
+            double minDistance = Double.MAX_VALUE;
+            int closestCentroidId = -1;
+            int k = centroids.size();
+
+            Double ub = tuple.f2;
+            Double[] lb = tuple.f3;
+
+            int position = 0;
+
+            Centroid c = centroids.iterator().next();
+
+            minDistance = point.euclideanDistance(c);
+            double dist = minDistance;
+            closestCentroidId = c.id;
+
+            lb[closestCentroidId-1] = minDistance;
+
+            // Loop trough all cluster centers
+            for (Centroid centroid : centroids) {
+
+                if(0.5 * coi.iCD[closestCentroidId-1][centroid.id-1] < minDistance) {
+                    lb[centroid.id-1] = dist = point.euclideanDistance(centroid);
+
+                    if(dist < minDistance) {
+                        minDistance = dist;
+                        closestCentroidId = centroid.id;
+                    }
+                }
+
+            }
+
+            ub = minDistance;
+
+            System.out.println("Point: " + point + "\t(UB: " + ub + ")" + "(LB: " + lb[0] + ", " + lb[1] + ", " + lb[2] + ")");
 
             // Emit a new record with the current closest center ID and the data point.
             return new Tuple4<>(closestCentroidId, point, ub, lb);
