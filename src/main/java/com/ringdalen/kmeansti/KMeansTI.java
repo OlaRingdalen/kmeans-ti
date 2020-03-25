@@ -48,19 +48,12 @@ public class KMeansTI {
         // make parameters available in the web interface
         env.getConfig().setGlobalJobParameters(params);
 
-        // get input data:
-        // read the points and centroids from the provided paths or fall back to default data
-        //DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> pointsTuple = getPointDataSet(params, env);
-        //DataSet<Tuple5<Integer, Integer, Centroid, Point, COI>> centroidsTuple = getCentroidDataSet(params, env);
-
+        // Read both points and centroids form files
         DataSet<Tuple4<Integer, Point, Double, Double[]>> points = getPointDataSet(params, env);
         DataSet<Centroid> centroids = getCentroidDataSet(params, env);
 
-        // Fetching the number of iterations that the program is executed with
+        // Fetching max number of iterations loop is executed with
         int iterations = params.getInt("iterations", 10);
-        int dimension = params.getInt("d");
-
-        //DataSet<Centroid> centroids = centroidsTuple.filter(new CentroidFilter()).map(new ExtractCentroids());
 
         // Computing the COI information
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> coiTuple = centroids.reduceGroup(new computeCOIInformation())
@@ -69,21 +62,14 @@ public class KMeansTI {
         DataSet<COI> coi = coiTuple.map(new ExtractCOI());
 
         //////////////////////////////////////// Initial mapping of the points ////////////////////////////////////////
-
-        //DataSet<Tuple2<Integer, Point>> nonClusteredPoints = pointsTuple.filter(new PointFilter()).project(1, 3);
-
-        DataSet<Tuple4<Integer, Point, Double, Double[]>> initialClusteredPoints = points
+                DataSet<Tuple4<Integer, Point, Double, Double[]>> initialClusteredPoints = points
                 .map(new SelectInitialNearestCenter())
                 .withBroadcastSet(centroids, "centroids")
                 .withBroadcastSet(coi, "coi");
-
-        //initialClusteredPoints.print();
+        //////////////////////////////////////// Initial mapping of the points ////////////////////////////////////////
 
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialPointsTuple = initialClusteredPoints.map(new ExpandPointsTuple());
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialCentroidsTuple = centroids.map(new ExpandCentroidsTuple());
-
-
-        //////////////////////////////////////// Initial mapping of the points ////////////////////////////////////////
 
         // Combine the points and centroids DataSets to one DataSet
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> unionData = initialPointsTuple.union(initialCentroidsTuple.union(coiTuple));
@@ -125,12 +111,14 @@ public class KMeansTI {
                 coiToNextIteration = singleNewCentroids.reduceGroup(new computeCOIInformation())
                 .withBroadcastSet(centroidsFromLastIteration, "oldCentroids");
 
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> converged = coiToNextIteration.filter(new checkConvergenceFilter());
+
         // Combine points, centroids and coi DataSets to one DataSet
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>>
                 toNextIteration = pointsToNextIteration.union(centroidsToNextIteration.union(coiToNextIteration));
 
         // Ending the loop and feeding back DataSet
-        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> finalOutput = loop.closeWith(toNextIteration);
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> finalOutput = loop.closeWith(toNextIteration, converged);
 
         // ************************************************************************************************************
         //  Loop ends here. Feed new centroids back into next iteration
@@ -178,7 +166,7 @@ public class KMeansTI {
 
         // Parsing d features from file to Point objects
         points = env.readTextFile(params.get("points"))
-                .map(new ReadPointData(params.getInt("d")));
+                .map(new ReadPointData(params.getInt("d"), params.getInt("k")));
 
         return points;
     }
@@ -240,6 +228,24 @@ public class KMeansTI {
         }
     }
 
+    public static class checkConvergenceFilter implements FilterFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
+        @Override
+        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> tuple) throws Exception {
+
+            double[] oldNewCentroidDistance = tuple.f6.distMap;
+
+            boolean converged = true;
+
+            for(int i = 0; i < oldNewCentroidDistance.length; i++) {
+                if(oldNewCentroidDistance[i] > 0.01) {
+                    converged = false;
+                }
+            }
+
+            return !converged;
+        }
+    }
+
     public static class ExtractCOI implements MapFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>, COI> {
 
         @Override
@@ -285,9 +291,11 @@ public class KMeansTI {
     /** Reads the input data and generate points */
     public static class ReadPointData implements MapFunction<String, Tuple4<Integer, Point, Double, Double[]>> {
         double[] row;
+        int k;
 
-        public ReadPointData(int d){
-            row = new double[d];
+        public ReadPointData(int d, int k){
+            this.row = new double[d];
+            this.k = k;
         }
 
         @Override
@@ -303,7 +311,7 @@ public class KMeansTI {
             Double ub = -1.0;
 
             // Declaring the initial lower bounds to -1
-            Double[] lb = new Double[row.length];
+            Double[] lb = new Double[k];
             Arrays.fill(lb, -1.0);
 
             return new Tuple4<>(-1, new Point(row), ub, lb);
@@ -449,18 +457,21 @@ public class KMeansTI {
                 newLb[i] = Math.max((currentLb[i] - coi.distMap[i]), 0.0);
             }
 
+            //System.out.println("Length of coi.distMap is " + coi.distMap.length);
+            //System.out.println("The ID that is used is " + (closestCentroidId-1));
+
             // Checking if the upperBound need to get updated
-            if (coi.distMap[centroidID - 1] > 0.0) {
+            if (coi.distMap[closestCentroidId - 1] > 0.0) {
 
                 // Updating the upperBound by adding the distance the currently assigned centroid has moved
-                newUb = currentUb + coi.distMap[centroidID - 1];
+                newUb = currentUb + coi.distMap[closestCentroidId - 1];
                 upperBoundUpdated = true;
             }
 
             double dist1 = 0.0;
             double dist2 = 0.0;
 
-            if (newUb > coi.minCD[centroidID-1]) {
+            if (newUb > coi.minCD[closestCentroidId - 1]) {
 
                 // check all cluster centers
                 for (Centroid centroid : centroids) {
@@ -476,12 +487,12 @@ public class KMeansTI {
                             newUb = dist1;
                             newLb[closestCentroidId-1] = dist1;
                             upperBoundUpdated = false;
+                        } else {
+                            dist1 = newUb;
                         }
 
-                        dist1 = newUb;
-
                         if (dist1 > newLb[centroid.id-1] || (dist1 > (0.5 * coi.iCD[closestCentroidId-1][centroid.id-1]))) {
-                            dist2 = point.euclideanDistance(centroidArray[centroid.id-1]);
+                            dist2 = point.euclideanDistance(centroid);
                             newLb[centroid.id-1] = dist2;
 
                             if(dist2 < dist1) {
@@ -560,6 +571,7 @@ public class KMeansTI {
         @Override
         public void open(Configuration parameters) throws Exception {
             this.centroidCollection = getRuntimeContext().getBroadcastVariable("oldCentroids");
+            System.out.println("computeCOIInformation(): There are now " + (centroidCollection.size()) + " centroids." );
         }
 
         @Override
