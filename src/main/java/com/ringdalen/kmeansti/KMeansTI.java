@@ -16,10 +16,6 @@ import org.apache.flink.util.Collector;
 
 import java.util.*;
 
-import org.slf4j.LoggerFactory;
-import org.slf4j.Logger;
-
-
 /**
  * This code is an extended version of the K-Means clustering algorithm provided as an example with Aapche Flink.
  *
@@ -33,8 +29,6 @@ import org.slf4j.Logger;
 
 @SuppressWarnings("serial")
 public class KMeansTI {
-
-    private static final Logger LOG = LoggerFactory.getLogger(KMeansTI.class);
 
     public static void main(String[] args) throws Exception {
 
@@ -75,8 +69,6 @@ public class KMeansTI {
                 .groupBy(0).reduce(new CentroidAccumulator())
                 // Compute new centroids from point counts and coordinate sums
                 .map(new CentroidAverager());
-
-
 
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialPointsTuple = initialClusteredPoints.map(new ExpandPointsTuple());
         //DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialCentroidsTuple = centroids.map(new ExpandCentroidsTuple());
@@ -198,7 +190,7 @@ public class KMeansTI {
          * @return boolean True if f0-field (key) is equal to 0, else return False
          */
         @Override
-        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) throws Exception {
+        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) {
             return (unionData.f0 == 0);
         }
     }
@@ -216,7 +208,7 @@ public class KMeansTI {
          * @return boolean True if f0-field (key) is equal to 1, else return False
          */
         @Override
-        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) throws Exception {
+        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) {
             return (unionData.f0 == 1);
         }
     }
@@ -233,22 +225,28 @@ public class KMeansTI {
          * @return boolean True if f0-field (key) is equal to 2, else return False
          */
         @Override
-        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) throws Exception {
+        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) {
             return (unionData.f0 == 2);
         }
     }
 
     public static class checkConvergenceFilter implements FilterFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
         @Override
-        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> tuple) throws Exception {
+        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> tuple) {
 
-            double[] oldNewCentroidDistance = tuple.f6.distMap;
+            double[] oldNewCentroidDistances = tuple.f6.distMap;
 
             boolean converged = true;
 
-            for(int i = 0; i < oldNewCentroidDistance.length; i++) {
-                if(oldNewCentroidDistance[i] > 0.01) {
+            // Loop trough all oldNewCentroidDistances to check for convergence
+            for (double distance : oldNewCentroidDistances) {
+
+                // Checking if one of the centroids has moved more than 0.01. If one has, the algorithm has not converged
+                if (distance > 0.01) {
                     converged = false;
+
+                    // Jump out of the loop and return result
+                    break;
                 }
             }
 
@@ -259,7 +257,7 @@ public class KMeansTI {
     public static class ExtractCOI implements MapFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>, COI> {
 
         @Override
-        public COI map(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> COIData) throws Exception {
+        public COI map(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> COIData) {
             return COIData.f6;
         }
     }
@@ -267,7 +265,7 @@ public class KMeansTI {
     public static class ExtractCentroids implements MapFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>, Centroid> {
 
         @Override
-        public Centroid map(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) throws Exception {
+        public Centroid map(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) {
             return unionData.f5;
         }
     }
@@ -276,7 +274,7 @@ public class KMeansTI {
 
         @Override
         public Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>
-            map(Tuple4<Integer, Point, Double, Double[]> point) throws Exception {
+            map(Tuple4<Integer, Point, Double, Double[]> point) {
 
             return new Tuple7<>(1, point.f0, point.f1, point.f2, point.f3, null, null);
         }
@@ -288,7 +286,7 @@ public class KMeansTI {
     public static class ExpandCentroidsTuple implements MapFunction<Centroid, Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
 
         @Override
-        public Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> map(Centroid centroid) throws Exception {
+        public Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> map(Centroid centroid) {
 
             // Initilazing empty values to put in the tuple
             Double emptyDouble = 0.0;
@@ -309,7 +307,7 @@ public class KMeansTI {
         }
 
         @Override
-        public Tuple4<Integer, Point, Double, Double[]> map(String s) throws Exception {
+        public Tuple4<Integer, Point, Double, Double[]> map(String s) {
             String[] buffer = s.split(" ");
 
             // Extracting values from the input string
@@ -333,12 +331,11 @@ public class KMeansTI {
         double[] row;
 
         public ReadCentroidData(int d){
-            //System.out.println("D is of length: " + d);
             row = new double[d];
         }
 
         @Override
-        public Centroid map(String s) throws Exception {
+        public Centroid map(String s) {
             String[] buffer = s.split(" ");
             int id = Integer.parseInt(buffer[0]);
 
@@ -351,86 +348,6 @@ public class KMeansTI {
         }
     }
 
-    /** Determines the initial closest cluster to data point. */
-    @ForwardedFields("f1")
-    public static final class SelectInitialNearestCenter2 extends RichMapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple4<Integer, Point, Double, Double[]>> {
-        private Collection<Centroid> centroids;
-        private Collection<COI> coiCollection;
-
-        /** Reads the centroid values from a broadcast variable into a collection. */
-        @Override
-        public void open(Configuration parameters) throws Exception {
-            this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
-            this.coiCollection = getRuntimeContext().getBroadcastVariable("coi");
-        }
-
-        @Override
-        public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) throws Exception {
-
-            // UNPACK COI HERE
-            COI coi = new ArrayList<>(coiCollection).get(0);
-            Point point = tuple.f1;
-
-            double minDistance = Double.MAX_VALUE;
-            int closestCentroidId = -1;
-            int k = centroids.size();
-
-            Double ub = tuple.f2;
-            Double[] lb = tuple.f3;
-
-            // All values defaults to false when initialized
-            boolean[] skip = new boolean[k];
-
-            // Loop trough all cluster centers
-            for (Centroid centroid : centroids) {
-
-                // This is the ID of the centroid, minus one. Used to reference position in arrays
-                int centroidRef = centroid.id - 1;
-
-                // Check if this distance calculation can be avoided based on calculation in previous iteration
-                //System.out.println("Skip is: " + skip[0]);
-                if (!skip[centroidRef]) {
-
-                    // Compute distance
-                    double distance = point.euclideanDistance(centroid);
-
-                    if(distance < 0.0) {
-                        System.out.println("Found minus distance");
-                    }
-
-                    // Setting the lower bound (LB)
-                    lb[centroidRef] = distance;
-
-                    // Update nearest cluster if necessary
-                    if (distance < minDistance) {
-                        minDistance = distance;
-
-                        // Setting the upper bound (UB)
-                        ub = minDistance;
-
-                        closestCentroidId = centroid.id;
-
-                        // Only loops trough the upper diagonal of the iCD multidimensional array, within this
-                        // outer loop.
-                        for (int i = centroidRef; i < k-1; i++) {
-
-                            // If d(centroid, centroid') >= 2d(point, centroid)
-                            // Then d(point, centroid') >= d(point, centroid)
-                            if (coi.iCD[centroidRef][i] >= (2 * distance)) {
-                                skip[i] = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            //System.out.println("Point: " + point + "\t(UB: " + ub + ")" + "(LB: " + lb[0] + ", " + lb[1] + ", " + lb[2] + ")");
-
-            // Emit a new record with the current closest center ID and the data point.
-            return new Tuple4<>(closestCentroidId, point, ub, lb);
-        }
-    }
-
     /** EXPERIMENTAL VERSION: Determines the initial closest cluster to data point. */
     @ForwardedFields("f1")
     public static final class SelectInitialNearestCenter extends RichMapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple4<Integer, Point, Double, Double[]>> {
@@ -439,30 +356,24 @@ public class KMeansTI {
 
         /** Reads the centroid values from a broadcast variable into a collection. */
         @Override
-        public void open(Configuration parameters) throws Exception {
+        public void open(Configuration parameters) {
             this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
             this.coiCollection = getRuntimeContext().getBroadcastVariable("coi");
         }
 
         @Override
-        public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) throws Exception {
+        public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) {
 
             // UNPACK COI HERE
             COI coi = new ArrayList<>(coiCollection).get(0);
+
             Point point = tuple.f1;
-
-            double minDistance = Double.MAX_VALUE;
-            int closestCentroidId = -1;
-            int k = centroids.size();
-
-            Double ub = tuple.f2;
             Double[] lb = tuple.f3;
-
             Centroid c = centroids.iterator().next();
 
-            minDistance = point.euclideanDistance(c);
-            double dist = minDistance;
-            closestCentroidId = c.id;
+            double minDistance = point.euclideanDistance(c);
+            double dist;
+            int closestCentroidId = c.id;
 
             lb[closestCentroidId-1] = minDistance;
 
@@ -477,14 +388,9 @@ public class KMeansTI {
                         closestCentroidId = centroid.id;
                     }
                 }
-
             }
 
-            ub = minDistance;
-
-            //System.out.println("Point: " + point + "\t(UB: " + ub + ")" + "(LB: " + lb[0] + ", " + lb[1] + ", " + lb[2] + ")");
-
-            //System.out.println("Initially assigning " + point + " to centroid " + closestCentroidId);
+            Double ub = minDistance;
 
             // Emit a new record with the current closest center ID and the data point.
             return new Tuple4<>(closestCentroidId, point, ub, lb);
@@ -492,20 +398,20 @@ public class KMeansTI {
     }
 
     /** Determines the closest cluster center for a data point. */
-    //@ForwardedFields("f1")
+    @ForwardedFields("f1")
     public static final class SelectNearestCenter extends RichMapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple4<Integer, Point, Double, Double[]>> {
         private Collection<Centroid> centroids;
         private Collection<COI> coiCollection;
 
         /** Reads the centroid values from a broadcast variable into a collection. */
         @Override
-        public void open(Configuration parameters) throws Exception {
+        public void open(Configuration parameters) {
             this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
             this.coiCollection = getRuntimeContext().getBroadcastVariable("coi");
         }
 
         @Override
-        public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) throws Exception {
+        public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) {
 
             // Unpacking the COI object
             COI coi = new ArrayList<>(coiCollection).get(0);
@@ -514,15 +420,11 @@ public class KMeansTI {
             Centroid[] centroidArray =  centroids.toArray(new Centroid[0]);
             Point point = tuple.f1;
 
-            double minDistance = Double.MAX_VALUE;
-
             Integer closestCentroidId = tuple.f0;
             boolean upperBoundUpdated = false;
 
             Double[] currentLb = tuple.f3;
             Double currentUb = tuple.f2;
-
-            Integer centroidID = tuple.f0;
 
             Double[] newLb = currentLb;
             Double newUb = currentUb;
@@ -531,11 +433,6 @@ public class KMeansTI {
             for (int i = 0; i < coi.k - 1; i++) {
                 newLb[i] = Math.max((currentLb[i] - coi.distMap[i]), 0.0);
             }
-
-            //System.out.println("Length of coi.distMap is " + coi.distMap.length);
-            //System.out.println("The ID that is used is " + (closestCentroidId-1));
-
-            //System.out.println("Distance between old and new centroid is " + coi.distMap[closestCentroidId - 1] );
 
             // Checking if the upperBound need to get updated
             if (coi.distMap[closestCentroidId - 1] > 0.0) {
@@ -546,8 +443,8 @@ public class KMeansTI {
                 System.out.println("Updating UB ");
             }
 
-            double dist1 = 0.0;
-            double dist2 = 0.0;
+            double dist1;
+            double dist2;
 
             if (newUb > coi.minCD[closestCentroidId - 1]) {
 
@@ -576,32 +473,14 @@ public class KMeansTI {
                             if(dist2 < dist1) {
                                 closestCentroidId = centroid.id;
 
-                                //System.out.println("Assigning " + point + " to centroid " + closestCentroidId + ". Because " + dist2 + " is less than " + dist1 + "");
-                                //System.out.println("Assigning " + point + " to centroid " + closestCentroidId + ". Because " + dist2 + " is less than " + dist1 + "");
-
                                 newUb = dist2;
                                 upperBoundUpdated = false;
                             }
                         }
 
-                    } /*else {
-                        System.out.println("This can be skipped");
-                    }*/
-
-                    // compute distance
-                    //double distance = tuple.f1.euclideanDistance(centroid);
-
-                    //System.out.println("AHEEM! Calculated distance between " + p.toString() + " and " + centroid.toString() + " is " + distance);
-
-                    // update nearest cluster if necessary
-                    //if (distance < minDistance) {
-                     //   minDistance = distance;
-                      //  closestCentroidId = centroid.id;
-                    //}
+                    }
                 }
             }
-
-            //System.out.println("Assigning " + point + " to centroid " + closestCentroidId);
 
             // emit a new record with the center id and the data point.
             return new Tuple4<>(closestCentroidId, tuple.f1, newUb, newLb);
@@ -639,8 +518,6 @@ public class KMeansTI {
         public Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> map(Tuple3<Integer, Point, Long> value) {
             Centroid centroid = new Centroid(value.f0, value.f1.div(value.f2));
 
-            //System.out.println("CentroidAverager(): Centroid with ID " + value.f0);
-
             // Initilazing empty values to put in the tuple
             Double emptyDouble = 0.0;
             Double[] emptyDoubleArray = {0.0};
@@ -655,13 +532,13 @@ public class KMeansTI {
 
         /** Reads the centroid values from a broadcast variable into a collection. */
         @Override
-        public void open(Configuration parameters) throws Exception {
+        public void open(Configuration parameters) {
             this.centroidCollection = getRuntimeContext().getBroadcastVariable("oldCentroids");
             System.out.println("computeCOIInformation(): There are now " + (centroidCollection.size()) + " centroids." );
         }
 
         @Override
-        public void reduce(Iterable<Centroid> iterable, Collector<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> collector) throws Exception {
+        public void reduce(Iterable<Centroid> iterable, Collector<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> collector) {
             // Instantiate list to store current / new centroids
             List<Centroid> newCentroids = new ArrayList<>();
 
@@ -684,26 +561,6 @@ public class KMeansTI {
             double[][] matrix = new double[dims][dims];
             double[] minCD = new double[dims];
             double[] distMap = new double[dims];
-
-            // USED FOR TESTING ONLY
-            /*System.out.println("====================================== Printing newCentroids in order ====================================");
-            for (int i = 0; i < dims; i++) {
-                System.out.println(newCentroids.get(i));
-            }
-            System.out.println("====================================== Printing newCentroids in order ==================================");
-
-
-            System.out.println("=================================== Printing oldCentroids in order =====================================");
-            for (int i = 0; i < dims; i++) {
-                System.out.println(oldCentroids.get(i));
-            }
-            System.out.println("====================================== Printing oldCentroids in order =====================================");
-
-            System.out.println("Representation of centroids in COI function.");
-            for(int i = 0; i < newCentroids.size(); i++) {
-                System.out.print(newCentroids.get(i) + " - ");
-            }
-            System.out.println("\n");*/
 
             // Computes the distances between every centroid and place them in List l
             for(int i = 0; i < newCentroids.size(); i++) {
@@ -742,11 +599,9 @@ public class KMeansTI {
             }
 
             // Produce the distMap
-            /*System.out.println("Producing the distMap");
             for (int i = 0; i < dims; i++) {
                 distMap[i] = newCentroids.get(i).euclideanDistance(oldCentroids.get(i));
-                System.out.println("Distance between " + newCentroids.get(i) + " and " + oldCentroids.get(i) + " is " + distMap[i]);
-            }*/
+            }
 
             // Make the new COI object
             COI coi = new COI(matrix, minCD, distMap);
