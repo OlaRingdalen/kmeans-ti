@@ -68,8 +68,18 @@ public class KMeansTI {
                 .withBroadcastSet(coi, "coi");
         //////////////////////////////////////// Initial mapping of the points ////////////////////////////////////////
 
+        // Producing new centroids based on the initial clustered points
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialCentroidsTuple = initialClusteredPoints
+                // Count and sum point coordinates for each centroid
+                .map(new CountAppender())
+                .groupBy(0).reduce(new CentroidAccumulator())
+                // Compute new centroids from point counts and coordinate sums
+                .map(new CentroidAverager());
+
+
+
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialPointsTuple = initialClusteredPoints.map(new ExpandPointsTuple());
-        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialCentroidsTuple = centroids.map(new ExpandCentroidsTuple());
+        //DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialCentroidsTuple = centroids.map(new ExpandCentroidsTuple());
 
         // Combine the points and centroids DataSets to one DataSet
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> unionData = initialPointsTuple.union(initialCentroidsTuple.union(coiTuple));
@@ -312,7 +322,7 @@ public class KMeansTI {
 
             // Declaring the initial lower bounds to -1
             Double[] lb = new Double[k];
-            Arrays.fill(lb, -1.0);
+            Arrays.fill(lb, 0.0);
 
             return new Tuple4<>(-1, new Point(row), ub, lb);
         }
@@ -414,7 +424,7 @@ public class KMeansTI {
                 }
             }
 
-            System.out.println("Point: " + point + "\t(UB: " + ub + ")" + "(LB: " + lb[0] + ", " + lb[1] + ", " + lb[2] + ")");
+            //System.out.println("Point: " + point + "\t(UB: " + ub + ")" + "(LB: " + lb[0] + ", " + lb[1] + ", " + lb[2] + ")");
 
             // Emit a new record with the current closest center ID and the data point.
             return new Tuple4<>(closestCentroidId, point, ub, lb);
@@ -448,8 +458,6 @@ public class KMeansTI {
             Double ub = tuple.f2;
             Double[] lb = tuple.f3;
 
-            int position = 0;
-
             Centroid c = centroids.iterator().next();
 
             minDistance = point.euclideanDistance(c);
@@ -474,7 +482,9 @@ public class KMeansTI {
 
             ub = minDistance;
 
-            System.out.println("Point: " + point + "\t(UB: " + ub + ")" + "(LB: " + lb[0] + ", " + lb[1] + ", " + lb[2] + ")");
+            //System.out.println("Point: " + point + "\t(UB: " + ub + ")" + "(LB: " + lb[0] + ", " + lb[1] + ", " + lb[2] + ")");
+
+            //System.out.println("Initially assigning " + point + " to centroid " + closestCentroidId);
 
             // Emit a new record with the current closest center ID and the data point.
             return new Tuple4<>(closestCentroidId, point, ub, lb);
@@ -525,12 +535,15 @@ public class KMeansTI {
             //System.out.println("Length of coi.distMap is " + coi.distMap.length);
             //System.out.println("The ID that is used is " + (closestCentroidId-1));
 
+            //System.out.println("Distance between old and new centroid is " + coi.distMap[closestCentroidId - 1] );
+
             // Checking if the upperBound need to get updated
             if (coi.distMap[closestCentroidId - 1] > 0.0) {
 
                 // Updating the upperBound by adding the distance the currently assigned centroid has moved
                 newUb = currentUb + coi.distMap[closestCentroidId - 1];
                 upperBoundUpdated = true;
+                System.out.println("Updating UB ");
             }
 
             double dist1 = 0.0;
@@ -562,6 +575,10 @@ public class KMeansTI {
 
                             if(dist2 < dist1) {
                                 closestCentroidId = centroid.id;
+
+                                //System.out.println("Assigning " + point + " to centroid " + closestCentroidId + ". Because " + dist2 + " is less than " + dist1 + "");
+                                //System.out.println("Assigning " + point + " to centroid " + closestCentroidId + ". Because " + dist2 + " is less than " + dist1 + "");
+
                                 newUb = dist2;
                                 upperBoundUpdated = false;
                             }
@@ -584,6 +601,8 @@ public class KMeansTI {
                 }
             }
 
+            //System.out.println("Assigning " + point + " to centroid " + closestCentroidId);
+
             // emit a new record with the center id and the data point.
             return new Tuple4<>(closestCentroidId, tuple.f1, newUb, newLb);
         }
@@ -594,7 +613,7 @@ public class KMeansTI {
      * Having them would make it more difficult to use reduce functions in the later stages.
      * Also appends a count variable to the tuple.
      */
-    @ForwardedFields("f0;f1")
+    @ForwardedFields("f0")
     public static final class CountAppender implements MapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple3<Integer, Point, Long>> {
 
         @Override
@@ -619,6 +638,8 @@ public class KMeansTI {
         @Override
         public Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> map(Tuple3<Integer, Point, Long> value) {
             Centroid centroid = new Centroid(value.f0, value.f1.div(value.f2));
+
+            //System.out.println("CentroidAverager(): Centroid with ID " + value.f0);
 
             // Initilazing empty values to put in the tuple
             Double emptyDouble = 0.0;
@@ -657,11 +678,32 @@ public class KMeansTI {
 
             // Ensure that the centroids are sorted in ascending order on their ID
             Collections.sort(newCentroids);
+            Collections.sort(oldCentroids);
 
             // Allocate the multidimensional array
             double[][] matrix = new double[dims][dims];
             double[] minCD = new double[dims];
             double[] distMap = new double[dims];
+
+            // USED FOR TESTING ONLY
+            /*System.out.println("====================================== Printing newCentroids in order ====================================");
+            for (int i = 0; i < dims; i++) {
+                System.out.println(newCentroids.get(i));
+            }
+            System.out.println("====================================== Printing newCentroids in order ==================================");
+
+
+            System.out.println("=================================== Printing oldCentroids in order =====================================");
+            for (int i = 0; i < dims; i++) {
+                System.out.println(oldCentroids.get(i));
+            }
+            System.out.println("====================================== Printing oldCentroids in order =====================================");
+
+            System.out.println("Representation of centroids in COI function.");
+            for(int i = 0; i < newCentroids.size(); i++) {
+                System.out.print(newCentroids.get(i) + " - ");
+            }
+            System.out.println("\n");*/
 
             // Computes the distances between every centroid and place them in List l
             for(int i = 0; i < newCentroids.size(); i++) {
@@ -700,9 +742,11 @@ public class KMeansTI {
             }
 
             // Produce the distMap
+            /*System.out.println("Producing the distMap");
             for (int i = 0; i < dims; i++) {
                 distMap[i] = newCentroids.get(i).euclideanDistance(oldCentroids.get(i));
-            }
+                System.out.println("Distance between " + newCentroids.get(i) + " and " + oldCentroids.get(i) + " is " + distMap[i]);
+            }*/
 
             // Make the new COI object
             COI coi = new COI(matrix, minCD, distMap);
