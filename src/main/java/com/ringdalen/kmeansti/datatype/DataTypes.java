@@ -1,4 +1,4 @@
-package com.ringdalen.kmeansti.util;
+package com.ringdalen.kmeansti.datatype;
 
 import java.io.Serializable;
 

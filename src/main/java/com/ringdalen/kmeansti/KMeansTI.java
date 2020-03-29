@@ -1,8 +1,10 @@
 package com.ringdalen.kmeansti;
 
-import com.ringdalen.kmeansti.util.DataTypes.Point;
-import com.ringdalen.kmeansti.util.DataTypes.Centroid;
-import com.ringdalen.kmeansti.util.DataTypes.COI;
+import com.ringdalen.kmeansti.datatype.DataTypes.Centroid;
+import com.ringdalen.kmeansti.datatype.DataTypes.Point;
+import com.ringdalen.kmeansti.datatype.DataTypes.COI;
+
+import com.ringdalen.kmeansti.util.Read;
 
 import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.java.DataSet;
@@ -32,7 +34,7 @@ public class KMeansTI {
 
     public static void main(String[] args) throws Exception {
 
-        // Checking input parameters
+        // Fetching input parameters
         final ParameterTool params = ParameterTool.fromArgs(args);
 
         // set up execution environment
@@ -43,50 +45,72 @@ public class KMeansTI {
         env.getConfig().setGlobalJobParameters(params);
 
         // Read both points and centroids form files
-        DataSet<Tuple4<Integer, Point, Double, Double[]>> points = getPointDataSet(params, env);
-        DataSet<Centroid> centroids = getCentroidDataSet(params, env);
+        DataSet<Tuple4<Integer, Point, Double, Double[]>> points = Read.PointsFromFile(params, env);
+        DataSet<Centroid> centroids = Read.CentroidsFromFile(params, env);
 
         // Fetching max number of iterations loop is executed with
         int iterations = params.getInt("iterations", 10);
 
+
+
+        ///////////////////////// Initial mapping of points and computation of new centroids /////////////////////////
+
         // Computing the COI information
-        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> coiTuple = centroids.reduceGroup(new computeCOIInformation())
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> coiTuple = centroids
+                .reduceGroup(new computeCOIInformation())
                 .withBroadcastSet(centroids, "oldCentroids");
 
         DataSet<COI> coi = coiTuple.map(new ExtractCOI());
 
-        //////////////////////////////////////// Initial mapping of the points ////////////////////////////////////////
-                DataSet<Tuple4<Integer, Point, Double, Double[]>> initialClusteredPoints = points
+        // Select the initial cluster the point is assigned to
+        DataSet<Tuple4<Integer, Point, Double, Double[]>> initialClusteredPoints = points
                 .map(new SelectInitialNearestCenter())
+                // Broadcast data that is needed in the initial clustering to each node
                 .withBroadcastSet(centroids, "centroids")
                 .withBroadcastSet(coi, "coi");
-        //////////////////////////////////////// Initial mapping of the points ////////////////////////////////////////
 
         // Producing new centroids based on the initial clustered points
-        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialCentroidsTuple = initialClusteredPoints
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>>
+                initialCentroidsTuple = initialClusteredPoints
                 // Count and sum point coordinates for each centroid
-                .map(new CountAppender())
-                .groupBy(0).reduce(new CentroidAccumulator())
+                .map(new CountAppender()).groupBy(0).reduce(new CentroidAccumulator())
                 // Compute new centroids from point counts and coordinate sums
                 .map(new CentroidAverager());
 
-        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialPointsTuple = initialClusteredPoints.map(new ExpandPointsTuple());
-        //DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> initialCentroidsTuple = centroids.map(new ExpandCentroidsTuple());
+        ///////////////////////// Initial mapping of points and computation of new centroids /////////////////////////
+
+
+
+        // Expand the points into a Tuple7 in order to union it with the other DataSets
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>>
+                initialPointsTuple = initialClusteredPoints.map(new ExpandPointsTuple());
 
         // Combine the points and centroids DataSets to one DataSet
-        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> unionData = initialPointsTuple.union(initialCentroidsTuple.union(coiTuple));
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>>
+                unionData = initialPointsTuple.union(initialCentroidsTuple.union(coiTuple));
+
+
 
         // ************************************************************************************************************
         //  Loop begins here
         // ************************************************************************************************************
 
-        // Use unionData to iterate on for n iterations, as specified in the input arguments
-        IterativeDataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> loop = unionData.iterate(iterations);
+        // Use unionData to iterate on for n iterations, as specified in the input arguments. This is the beginning
+        // of the loop
+        IterativeDataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>>
+                loop = unionData.iterate(iterations);
 
-        // Separate out points, centroids and COI information to separate DataSets in order to perform computations on them
-        DataSet<Tuple4<Integer, Point, Double, Double[]>> pointsFromLastIteration = loop.filter(new PointFilter()).project(1, 2, 3, 4);
-        DataSet<Centroid> centroidsFromLastIteration = loop.filter(new CentroidFilter()).map(new ExtractCentroids());
-        DataSet<COI> coiFromLastIteration = loop.filter(new COIFilter()).map(new ExtractCOI());
+        // Separate points in a DataSet in order to use it later in the iteration
+        DataSet<Tuple4<Integer, Point, Double, Double[]>>
+                pointsFromLastIteration = loop.filter(new PointFilter()).project(1, 2, 3, 4);
+
+        // Separate centroids in a DataSet in order to use it later in the iteration
+        DataSet<Centroid>
+                centroidsFromLastIteration = loop.filter(new CentroidFilter()).map(new ExtractCentroids());
+
+        // Separate COI in a DataSet in order to use it later in the iteration
+        DataSet<COI>
+                coiFromLastIteration = loop.filter(new COIFilter()).map(new ExtractCOI());
 
         // Asssigning each point to the nearest centroid
         DataSet<Tuple4<Integer, Point, Double, Double[]>> partialClusteredPoints = pointsFromLastIteration
@@ -103,16 +127,22 @@ public class KMeansTI {
                 // Compute new centroids from point counts and coordinate sums
                 .map(new CentroidAverager());
 
-        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> pointsToNextIteration = partialClusteredPoints.map(new ExpandPointsTuple());
+        // Expand the tuples with points from a Tuple4 to a Tuple7 in order to union it with other datasets
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>>
+                pointsToNextIteration = partialClusteredPoints.map(new ExpandPointsTuple());
 
         // Separate out centroids in order to be used in calculation for COI
-        DataSet<Centroid> singleNewCentroids = centroidsToNextIteration.filter(new CentroidFilter()).map(new ExtractCentroids());
+        DataSet<Centroid> singleNewCentroids = centroidsToNextIteration.filter(new CentroidFilter())
+                .map(new ExtractCentroids());
 
         // Computing the new COI information
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>>
                 coiToNextIteration = singleNewCentroids.reduceGroup(new computeCOIInformation())
+                // Broadcast data that is needed in the initial clustering to each node
                 .withBroadcastSet(centroidsFromLastIteration, "oldCentroids");
 
+        // Check if the algorithm has converged. If no centroids has moved more than 0.001, an empty DataSet will be
+        // returned and that will halt the iteration.
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> converged = coiToNextIteration.filter(new checkConvergenceFilter());
 
         // Combine points, centroids and coi DataSets to one DataSet
@@ -126,51 +156,23 @@ public class KMeansTI {
         //  Loop ends here. Feed new centroids back into next iteration
         // ************************************************************************************************************
 
-        DataSet<Tuple2<Integer, Point>> clusteredPoints = finalOutput.filter(new PointFilter()).project(1, 2);
 
+        // Only preserve the information (ID of cluster point is assigned to and the point itself) that will be
+        // printed to file or the console
+        DataSet<Tuple2<Integer, Point>> clusteredPoints = finalOutput
+                .filter(new PointFilter())
+                .project(1, 2);
 
-        // emit result
+        // Print the results, either to a file of the console
         if (params.has("output")) {
             clusteredPoints.writeAsCsv(params.get("output"), "\n", " ");
 
-            // since file sinks are lazy, we trigger the execution explicitly
-            env.execute("KMeans Example");
+            // Calling execute will trigger the execution of the file sink (file sinks are lazy)
+            env.execute("KMeansTI");
         } else {
             System.out.println("Printing result to stdout. Use --output to specify output path.");
             clusteredPoints.print();
         }
-    }
-
-    // *************************************************************************
-    //     DATA SOURCE READING (POINTS AND CENTROIDS)
-    // *************************************************************************
-
-    /**
-     * Function to map data from a file to Centroid objects
-     */
-    private static DataSet<Centroid> getCentroidDataSet(ParameterTool params, ExecutionEnvironment env) {
-
-        DataSet<Centroid> centroids;
-
-        // Parsing d features, plus the ID (thats why the +1 is included) from file to Centroid objects
-        centroids = env.readTextFile(params.get("centroids"))
-                .map(new ReadCentroidData(params.getInt("d")));
-
-        return centroids;
-    }
-
-    /**
-     * Function to map data from a file to Point objects
-     */
-    private static DataSet<Tuple4<Integer, Point, Double, Double[]>> getPointDataSet(ParameterTool params, ExecutionEnvironment env) {
-
-        DataSet<Tuple4<Integer, Point, Double, Double[]>> points;
-
-        // Parsing d features from file to Point objects
-        points = env.readTextFile(params.get("points"))
-                .map(new ReadPointData(params.getInt("d"), params.getInt("k")));
-
-        return points;
     }
 
     // *************************************************************************
@@ -221,8 +223,8 @@ public class KMeansTI {
         /**
          * Filter out Tuple7 that does not have the key 2, which means the Tuple does not contain a COI object.
          *
-         * @param unionData Tuple7 with all unionData
-         * @return boolean True if f0-field (key) is equal to 2, else return False
+         * @param unionData Tuple7 with all unionData.
+         * @return boolean True if f0-field (key) is equal to 2, else return False.
          */
         @Override
         public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) {
@@ -230,48 +232,92 @@ public class KMeansTI {
         }
     }
 
+    /**
+     * This class implements the FilterFunction in order to filter out a COI object based on convergence. A returned
+     * COI object means that the algorithm has not converged.
+     */
     public static class checkConvergenceFilter implements FilterFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
+
+        /**
+         * Filter out and return the COI object if not all centroids has converged (meaning that they have moved more
+         * than 0.01). A returned object will allows the iteration to continue. If no object is returned and the
+         * DataSet is empty, the iteration will stop.
+         *
+         * @param COITuple Tuple7 with one COI object.
+         * @return boolean True if not converged, False if it has converged
+         */
         @Override
-        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> tuple) {
+        public boolean filter(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> COITuple) {
 
-            double[] oldNewCentroidDistances = tuple.f6.distMap;
-
-            boolean converged = true;
+            double[] oldNewCentroidDistances = COITuple.f6.distMap;
+            boolean hasConverged = false;
 
             // Loop trough all oldNewCentroidDistances to check for convergence
             for (double distance : oldNewCentroidDistances) {
 
-                // Checking if one of the centroids has moved more than 0.01. If one has, the algorithm has not converged
+                // Checking if one of the centroids has moved more than 0.01.
+                // If one has, the algorithm has not converged
                 if (distance > 0.01) {
-                    converged = false;
+                    hasConverged = true;
 
                     // Jump out of the loop and return result
                     break;
                 }
             }
 
-            return !converged;
+            return hasConverged;
         }
     }
 
+    /**
+     * This class implements the MapFunction to extract the COI object from a tuple
+     */
     public static class ExtractCOI implements MapFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>, COI> {
 
+        /**
+         * Takes a Tuple7 that includes the COI object and return only this object. In this implementation no more
+         * than one COI object should exist at any time.
+         *
+         * @param COITuple Tuple7 with a COI object
+         * @return COI, should only be one object that is returned.
+         */
         @Override
-        public COI map(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> COIData) {
-            return COIData.f6;
+        public COI map(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> COITuple) {
+            return COITuple.f6;
         }
     }
 
+    /**
+     * This class implements the MapFunction to extract all Centroids objects from the tuples
+     */
     public static class ExtractCentroids implements MapFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>, Centroid> {
 
+        /**
+         * Takes a Tuple7 with all information and extracts only the Centroid object. Multiple centroids exists,
+         * however the number of centroids is usually relatively low.
+         *
+         * @param unionData Tuple 7 with all information
+         * @return Centroid
+         */
         @Override
         public Centroid map(Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> unionData) {
             return unionData.f5;
         }
     }
 
+    /**
+     * This class implements the MapFunction to expand the points tuple
+     */
     public static class ExpandPointsTuple implements MapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
 
+        /**
+         * Takes a Tuple4 and return a Tuple7 where the fields that are not used by points is empty. This Tuple7
+         * is used to union all data at the end of the iteration.
+         *
+         * @param point A Tuple4 with the ID the point is assigned to, the point itself, the upper bound and the lower
+         *              bounds
+         * @return Tuple7 with correct key identifier (1) and the rest of the information.
+         */
         @Override
         public Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>
             map(Tuple4<Integer, Point, Double, Double[]> point) {
@@ -281,86 +327,32 @@ public class KMeansTI {
     }
 
     /**
-     * Tuple fields cannot be 0 here, as this will throw an error when the tuples cannot be serialized
+     * This class implements the RichMapFunction to initially select the nearest centroid to a point. This class
+     * function is utilized once before the loop begins. Field f1 is forwarded to improve efficiency, as this field
+     * is not changed in the function.
      */
-    public static class ExpandCentroidsTuple implements MapFunction<Centroid, Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
-
-        @Override
-        public Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> map(Centroid centroid) {
-
-            // Initilazing empty values to put in the tuple
-            Double emptyDouble = 0.0;
-            Double[] emptyDoubleArray = {0.0};
-
-            return new Tuple7<>(0, 0, null, emptyDouble, emptyDoubleArray, centroid, null);
-        }
-    }
-
-    /** Reads the input data and generate points */
-    public static class ReadPointData implements MapFunction<String, Tuple4<Integer, Point, Double, Double[]>> {
-        double[] row;
-        int k;
-
-        public ReadPointData(int d, int k){
-            this.row = new double[d];
-            this.k = k;
-        }
-
-        @Override
-        public Tuple4<Integer, Point, Double, Double[]> map(String s) {
-            String[] buffer = s.split(" ");
-
-            // Extracting values from the input string
-            for(int i = 0; i < row.length; i++) {
-                row[i] = Double.parseDouble(buffer[i]);
-            }
-
-            // Declaring the initial upper bound to -1
-            Double ub = -1.0;
-
-            // Declaring the initial lower bounds to -1
-            Double[] lb = new Double[k];
-            Arrays.fill(lb, 0.0);
-
-            return new Tuple4<>(-1, new Point(row), ub, lb);
-        }
-    }
-
-    /** Reads the input data and generate centroids */
-    public static class ReadCentroidData implements MapFunction<String, Centroid> {
-        double[] row;
-
-        public ReadCentroidData(int d){
-            row = new double[d];
-        }
-
-        @Override
-        public Centroid map(String s) {
-            String[] buffer = s.split(" ");
-            int id = Integer.parseInt(buffer[0]);
-
-            // buffer is +1 since this array is one longer
-            for(int i = 0; i < row.length; i++) {
-                row[i] = Double.parseDouble(buffer[i+1]);
-            }
-
-            return new Centroid(id, row);
-        }
-    }
-
-    /** EXPERIMENTAL VERSION: Determines the initial closest cluster to data point. */
     @ForwardedFields("f1")
     public static final class SelectInitialNearestCenter extends RichMapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple4<Integer, Point, Double, Double[]>> {
         private Collection<Centroid> centroids;
         private Collection<COI> coiCollection;
 
-        /** Reads the centroid values from a broadcast variable into a collection. */
+        /**
+         * Reads the centroid values from a broadcast DataSet and reads the COI value from a broadcast DataSet
+         *
+         * @param parameters pass the runtime context
+         */
         @Override
         public void open(Configuration parameters) {
             this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
             this.coiCollection = getRuntimeContext().getBroadcastVariable("coi");
         }
 
+        /**
+         * TODO: more indepth explanation of functionality
+         *
+         * @param tuple
+         * @return
+         */
         @Override
         public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) {
 
@@ -397,19 +389,31 @@ public class KMeansTI {
         }
     }
 
-    /** Determines the closest cluster center for a data point. */
+    /**
+     * This class implement the RichMapFunction to select the nearest cluster center for a point. This class functions
+     * is utilized within the iteration.
+     */
     @ForwardedFields("f1")
     public static final class SelectNearestCenter extends RichMapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple4<Integer, Point, Double, Double[]>> {
         private Collection<Centroid> centroids;
         private Collection<COI> coiCollection;
 
-        /** Reads the centroid values from a broadcast variable into a collection. */
+        /**
+         * Reads the centroid values from a broadcast DataSet and reads the COI value from a broadcast DataSet
+         * @param parameters pass the runtime context
+         */
         @Override
         public void open(Configuration parameters) {
             this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
             this.coiCollection = getRuntimeContext().getBroadcastVariable("coi");
         }
 
+        /**
+         * TODO: more indepth explanation of functionality
+         *
+         * @param tuple
+         * @return
+         */
         @Override
         public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) {
 
@@ -477,7 +481,6 @@ public class KMeansTI {
                                 upperBoundUpdated = false;
                             }
                         }
-
                     }
                 }
             }
@@ -488,32 +491,62 @@ public class KMeansTI {
     }
 
     /**
-     * Removed the upper and lower bounds since they are not needed in the calculation of the new centroids
-     * Having them would make it more difficult to use reduce functions in the later stages.
-     * Also appends a count variable to the tuple.
+     * This class implements the MapFunction to append an integer to each point, which is used to count total
+     * occurrences of points assigned to one centroid. Field f0 (the ID of the cluster) and field f1 (the point)
+     * is forwarded directly to the input.
      */
-    @ForwardedFields("f0")
+    @ForwardedFields("f0;f1")
     public static final class CountAppender implements MapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple3<Integer, Point, Long>> {
 
+        /**
+         * Takes in a Tuple4 with all point information and return a Tuple3 with the ID of the cluster the point is
+         * assigned to, the point itself and a counter variable. The upper and lower bounds are removed since they are
+         * not needed in the calculation of the new centroids (it would complicate the use of the reduce
+         * function later if they were preserved also)
+         *
+         * @param pointData A Tuple4 with all point information
+         * @return A Tuple3 with only necessary data and a counter
+         */
         @Override
-        public Tuple3<Integer, Point, Long> map(Tuple4<Integer, Point, Double, Double[]> t) {
-            return new Tuple3<>(t.f0, t.f1, 1L);
+        public Tuple3<Integer, Point, Long> map(Tuple4<Integer, Point, Double, Double[]> pointData) {
+            return new Tuple3<>(pointData.f0, pointData.f1, 1L);
         }
     }
 
-    /** Sums and counts point coordinates. */
+    /**
+     * This class implements the ReduceFunction in order to take in two points and reduce them to one, by adding the
+     * points and the counters. Field 0 is forwarded as this does not change.
+     */
     @ForwardedFields("0")
     public static final class CentroidAccumulator implements ReduceFunction<Tuple3<Integer, Point, Long>> {
 
+        /**
+         * Takes two points and add them together, in addition to adding the counters together. When all points are
+         * accumulated the new centroid can be calculated in a later function using output from this function.
+         *
+         * @param point1 First point to be reduced to one
+         * @param point2 Second point to be reduced to
+         * @return A single Tuple3 is returned with the total values from the two points.
+         */
         @Override
-        public Tuple3<Integer, Point, Long> reduce(Tuple3<Integer, Point, Long> val1, Tuple3<Integer, Point, Long> val2) {
-            return new Tuple3<>(val1.f0, val1.f1.add(val2.f1), val1.f2 + val2.f2);
+        public Tuple3<Integer, Point, Long> reduce(Tuple3<Integer, Point, Long> point1, Tuple3<Integer, Point, Long> point2) {
+            return new Tuple3<>(point1.f0, point1.f1.add(point2.f1), point1.f2 + point2.f2);
         }
     }
 
-    /** Computes new centroid from coordinate sum and count of points. */
+    /**
+     * This class implements the MapFunction in order to compute a new centroid based on a fully accumulated point
+     */
     public static final class CentroidAverager implements MapFunction<Tuple3<Integer, Point, Long>, Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
 
+        /**
+         * Takes in a fully accumulated point and return the centroid which is the average of all current points
+         * assigned to the centroid.
+         *
+         * @param value The accumulated point
+         * @return Tuple7 with all centroid field filled and all other fields contain dummy data. The key for the tuple
+         *          is also set to 0, indicating that it holds a centroid.
+         */
         @Override
         public Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI> map(Tuple3<Integer, Point, Long> value) {
             Centroid centroid = new Centroid(value.f0, value.f1.div(value.f2));
@@ -539,6 +572,7 @@ public class KMeansTI {
 
         @Override
         public void reduce(Iterable<Centroid> iterable, Collector<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> collector) {
+            
             // Instantiate list to store current / new centroids
             List<Centroid> newCentroids = new ArrayList<>();
 
