@@ -6,6 +6,8 @@ import com.ringdalen.kmeansti.datatype.DataTypes.COI;
 
 import com.ringdalen.kmeansti.util.Read;
 
+import org.apache.flink.api.common.JobExecutionResult;
+import org.apache.flink.api.common.accumulators.IntCounter;
 import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
@@ -37,9 +39,9 @@ public class KMeansTI {
         // Fetching input parameters
         final ParameterTool params = ParameterTool.fromArgs(args);
 
-        // set up execution environment
-        //ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-        ExecutionEnvironment env = ExecutionEnvironment.createLocalEnvironment();
+        // Set up execution environment. getExecutionEnvironment will work both in a local IDE as well as in i
+        // cluster infrastructure.
+        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
         // make parameters available in the web interface
         env.getConfig().setGlobalJobParameters(params);
@@ -165,12 +167,15 @@ public class KMeansTI {
 
         // Print the results, either to a file of the console
         if (params.has("output")) {
-            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ");
+            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ").setParallelism(1);
 
             // Calling execute will trigger the execution of the file sink (file sinks are lazy)
-            env.execute("KMeansTI");
+            JobExecutionResult executionResult = env.execute("KMeansTI");
+            int c = executionResult.getAccumulatorResult("num-distance-calculations");
+            System.out.println("Number of distance calculations: " + c);
         } else {
             System.out.println("Printing result to stdout. Use --output to specify output path.");
+
             clusteredPoints.print();
         }
     }
@@ -336,34 +341,46 @@ public class KMeansTI {
         private Collection<Centroid> centroids;
         private Collection<COI> coiCollection;
 
+        // Accumulator used to track the total number of distance calculations performed
+        private IntCounter numDistanceCalculations = new IntCounter();
+
         /**
          * Reads the centroid values from a broadcast DataSet and reads the COI value from a broadcast DataSet
          *
-         * @param parameters pass the runtime context
+         * @param parameters The runtime parameters
          */
         @Override
         public void open(Configuration parameters) {
             this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
             this.coiCollection = getRuntimeContext().getBroadcastVariable("coi");
+
+            // Registering the accumulator object and defining the name of the accumulator
+            getRuntimeContext().addAccumulator("num-distance-calculations", this.numDistanceCalculations);
         }
 
         /**
-         * TODO: more indepth explanation of functionality
+         * This function select the initial centroids each point is assigned to. It also calculates the lower bounds
+         * and the upper bound.
          *
-         * @param tuple
-         * @return
+         * @param tuple A Tuple4 with 0 as the initial centroid ID the point is assigned to. This 0 will be overwritten
+         * @return A Tuple4 with nearest centroid ID
          */
         @Override
         public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) {
 
-            // UNPACK COI HERE
+            // The COI object is extracted to a single object
             COI coi = new ArrayList<>(coiCollection).get(0);
 
             Point point = tuple.f1;
             Double[] lb = tuple.f3;
             Centroid c = centroids.iterator().next();
 
+            // Calculating the distance between the first centroid in the collection and this point
             double minDistance = point.euclideanDistance(c);
+
+            // Increasing the accumulator for number of distance calculations
+            this.numDistanceCalculations.add(1);
+
             double dist;
             int closestCentroidId = c.id;
 
@@ -373,7 +390,13 @@ public class KMeansTI {
             for (Centroid centroid : centroids) {
 
                 if(0.5 * coi.iCD[closestCentroidId-1][centroid.id-1] < minDistance) {
+
+                    // Calculating the lower bound for this centroid and saving the distance between the centroid
+                    // and this point
                     lb[centroid.id-1] = dist = point.euclideanDistance(centroid);
+
+                    // Increasing the accumulator for number of distance calculations
+                    this.numDistanceCalculations.add(1);
 
                     if(dist < minDistance) {
                         minDistance = dist;
@@ -390,8 +413,8 @@ public class KMeansTI {
     }
 
     /**
-     * This class implement the RichMapFunction to select the nearest cluster center for a point. This class functions
-     * is utilized within the iteration.
+     * This class implements the RichMapFunction to select the nearest cluster center for a point. This class function
+     * is utilized within the iteration. Field f1 is forwarded as this is not changed.
      */
     @ForwardedFields("f1")
     public static final class SelectNearestCenter extends RichMapFunction<Tuple4<Integer, Point, Double, Double[]>, Tuple4<Integer, Point, Double, Double[]>> {
@@ -400,7 +423,7 @@ public class KMeansTI {
 
         /**
          * Reads the centroid values from a broadcast DataSet and reads the COI value from a broadcast DataSet
-         * @param parameters pass the runtime context
+         * @param parameters The runtime parameters
          */
         @Override
         public void open(Configuration parameters) {
@@ -409,10 +432,12 @@ public class KMeansTI {
         }
 
         /**
-         * TODO: more indepth explanation of functionality
+         * This function takes a clustered point and assigns it to a new centroid if a centroid is deemed to be
+         * closer than the already assigned centroid. The lower bounds and the upper bound is updated as well.
          *
-         * @param tuple
-         * @return
+         * @param tuple A Tuple4 with an ID for assigned centroid, the point itself, upper bound and the lower bounds
+         * @return A Tuple4 with possibly new ID for assigned centroid, the point itself, upper bound and the
+         *          lower bounds
          */
         @Override
         public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) {
@@ -460,7 +485,7 @@ public class KMeansTI {
                     // Check if DISTANCE(THIS CENTROID AND P'S CURRENT ASSIGNED CENTROID)  >= 2 * MIN_DIST
                     if ((centroid.id != closestCentroidId) && (newUb > newLb[centroid.id-1]) && (newUb > coi.iCD[closestCentroidId-1][centroid.id-1])) {
 
-                        // Do only this is upper bound is updated
+                        // Do only this if upper bound is updated
                         if (upperBoundUpdated) {
                             dist1 = point.euclideanDistance(centroidArray[closestCentroidId-1]);
                             newUb = dist1;
@@ -470,6 +495,7 @@ public class KMeansTI {
                             dist1 = newUb;
                         }
 
+                        // TODO: More comments around her aswell
                         if (dist1 > newLb[centroid.id-1] || (dist1 > (0.5 * coi.iCD[closestCentroidId-1][centroid.id-1]))) {
                             dist2 = point.euclideanDistance(centroid);
                             newLb[centroid.id-1] = dist2;
@@ -559,17 +585,34 @@ public class KMeansTI {
         }
     }
 
-    /** Takes all centroids and computes centroid inter-distances */
+    /**
+     * This class implements the RichGroupReduceFunction in order to compute the COI (Carry-Over-Information) object.
+     * The COI object contains information about the inter-centroid distances (distances between each centroid),
+     * how much each centroid has moved between last and current iteration, the minimum distance between each centroid,
+     * and what K is.
+     */
     public static class computeCOIInformation extends RichGroupReduceFunction<Centroid, Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
         private Collection<Centroid> centroidCollection;
 
-        /** Reads the centroid values from a broadcast variable into a collection. */
+        /**
+         * Reads the centroid values from a broadcast DataSet into a collection.
+         *
+         * @param parameters The runtime parameters
+         */
         @Override
         public void open(Configuration parameters) {
             this.centroidCollection = getRuntimeContext().getBroadcastVariable("oldCentroids");
-            System.out.println("computeCOIInformation(): There are now " + (centroidCollection.size()) + " centroids." );
         }
 
+        /**
+         * This function use the centroid from the last iteration and the centroids from this iteration in order to
+         * produce the COI (Carry-Over-Information) object. The old centroids are passed to this function via a
+         * broadcast variable, while the new centroids are passed directly to the function trough its input (since
+         * it is a GroupReduceFunction that reduce the input from a whole group).
+         *
+         * @param iterable This is the centroids from the current iteration, all sent to the group reduce function
+         * @param collector Tuple7 where the COI object is stored, the correct key is set and returned
+         */
         @Override
         public void reduce(Iterable<Centroid> iterable, Collector<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> collector) {
             
@@ -587,7 +630,8 @@ public class KMeansTI {
             // Store the size of the List, which is used in allocation of array below
             int dims = newCentroids.size();
 
-            // Ensure that the centroids are sorted in ascending order on their ID
+            // Ensure that the centroids are sorted in ascending order on their ID in order to be able to use
+            // them in the for-loop below.
             Collections.sort(newCentroids);
             Collections.sort(oldCentroids);
 
