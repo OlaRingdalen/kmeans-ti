@@ -16,6 +16,7 @@ import org.apache.flink.api.java.operators.IterativeDataSet;
 import org.apache.flink.api.java.tuple.*;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.util.Collector;
 
 import java.util.*;
@@ -59,7 +60,7 @@ public class KMeansTI {
 
         // Computing the COI information
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> coiTuple = centroids
-                .reduceGroup(new computeCOIInformation())
+                .reduceGroup(new computeCOI())
                 .withBroadcastSet(centroids, "oldCentroids");
 
         DataSet<COI> coi = coiTuple.map(new ExtractCOI());
@@ -139,7 +140,7 @@ public class KMeansTI {
 
         // Computing the new COI information
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>>
-                coiToNextIteration = singleNewCentroids.reduceGroup(new computeCOIInformation())
+                coiToNextIteration = singleNewCentroids.reduceGroup(new computeCOI())
                 // Broadcast data that is needed in the initial clustering to each node
                 .withBroadcastSet(centroidsFromLastIteration, "oldCentroids");
 
@@ -167,12 +168,11 @@ public class KMeansTI {
 
         // Print the results, either to a file of the console
         if (params.has("output")) {
-            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ").setParallelism(1);
+            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ");
 
             // Calling execute will trigger the execution of the file sink (file sinks are lazy)
             JobExecutionResult executionResult = env.execute("KMeansTI");
-            int c = executionResult.getAccumulatorResult("num-distance-calculations");
-            System.out.println("Number of distance calculations: " + c);
+
         } else {
             System.out.println("Printing result to stdout. Use --output to specify output path.");
 
@@ -342,7 +342,7 @@ public class KMeansTI {
         private Collection<COI> coiCollection;
 
         // Accumulator used to track the total number of distance calculations performed
-        private IntCounter numDistanceCalculations = new IntCounter();
+        private IntCounter distCalcSelectInitialNearestCenter = new IntCounter();
 
         /**
          * Reads the centroid values from a broadcast DataSet and reads the COI value from a broadcast DataSet
@@ -355,7 +355,7 @@ public class KMeansTI {
             this.coiCollection = getRuntimeContext().getBroadcastVariable("coi");
 
             // Registering the accumulator object and defining the name of the accumulator
-            getRuntimeContext().addAccumulator("num-distance-calculations", this.numDistanceCalculations);
+            getRuntimeContext().addAccumulator("distCalcSelectInitialNearestCenter", this.distCalcSelectInitialNearestCenter);
         }
 
         /**
@@ -379,7 +379,7 @@ public class KMeansTI {
             double minDistance = point.euclideanDistance(c);
 
             // Increasing the accumulator for number of distance calculations
-            this.numDistanceCalculations.add(1);
+            this.distCalcSelectInitialNearestCenter.add(1);
 
             double dist;
             int closestCentroidId = c.id;
@@ -396,7 +396,7 @@ public class KMeansTI {
                     lb[centroid.id-1] = dist = point.euclideanDistance(centroid);
 
                     // Increasing the accumulator for number of distance calculations
-                    this.numDistanceCalculations.add(1);
+                    this.distCalcSelectInitialNearestCenter.add(1);
 
                     if(dist < minDistance) {
                         minDistance = dist;
@@ -421,6 +421,9 @@ public class KMeansTI {
         private Collection<Centroid> centroids;
         private Collection<COI> coiCollection;
 
+        // Accumulator used to track the total number of distance calculations performed
+        private IntCounter distCalcSelectNearestCenter = new IntCounter();
+
         /**
          * Reads the centroid values from a broadcast DataSet and reads the COI value from a broadcast DataSet
          * @param parameters The runtime parameters
@@ -429,6 +432,9 @@ public class KMeansTI {
         public void open(Configuration parameters) {
             this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
             this.coiCollection = getRuntimeContext().getBroadcastVariable("coi");
+
+            // Registering the accumulator object and defining the name of the accumulator
+            getRuntimeContext().addAccumulator("distCalcSelectNearestCenter", this.distCalcSelectNearestCenter);
         }
 
         /**
@@ -469,7 +475,6 @@ public class KMeansTI {
                 // Updating the upperBound by adding the distance the currently assigned centroid has moved
                 newUb = currentUb + coi.distMap[closestCentroidId - 1];
                 upperBoundUpdated = true;
-                System.out.println("Updating UB ");
             }
 
             double dist1;
@@ -488,6 +493,10 @@ public class KMeansTI {
                         // Do only this if upper bound is updated
                         if (upperBoundUpdated) {
                             dist1 = point.euclideanDistance(centroidArray[closestCentroidId-1]);
+
+                            // Increasing the accumulator for number of distance calculations
+                            this.distCalcSelectNearestCenter.add(1);
+                            
                             newUb = dist1;
                             newLb[closestCentroidId-1] = dist1;
                             upperBoundUpdated = false;
@@ -591,8 +600,11 @@ public class KMeansTI {
      * how much each centroid has moved between last and current iteration, the minimum distance between each centroid,
      * and what K is.
      */
-    public static class computeCOIInformation extends RichGroupReduceFunction<Centroid, Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
+    public static class computeCOI extends RichGroupReduceFunction<Centroid, Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
         private Collection<Centroid> centroidCollection;
+
+        // Accumulator used to track the total number of distance calculations performed
+        private IntCounter distCalcComputeCOI = new IntCounter();
 
         /**
          * Reads the centroid values from a broadcast DataSet into a collection.
@@ -602,6 +614,9 @@ public class KMeansTI {
         @Override
         public void open(Configuration parameters) {
             this.centroidCollection = getRuntimeContext().getBroadcastVariable("oldCentroids");
+
+            // Registering the accumulator object and defining the name of the accumulator
+            getRuntimeContext().addAccumulator("distCalcComputeCOI", this.distCalcComputeCOI);
         }
 
         /**
@@ -658,6 +673,9 @@ public class KMeansTI {
                         // Calculate the distance between the two centroids
                         double dist = ci.euclideanDistance(cj);
 
+                        // Increasing the accumulator for number of distance calculations
+                        this.distCalcComputeCOI.add(1);
+
                         // Update the matrix with the distance
                         matrix[i][j] = dist;
 
@@ -679,6 +697,9 @@ public class KMeansTI {
             // Produce the distMap
             for (int i = 0; i < dims; i++) {
                 distMap[i] = newCentroids.get(i).euclideanDistance(oldCentroids.get(i));
+
+                // Increasing the accumulator for number of distance calculations
+                this.distCalcComputeCOI.add(1);
             }
 
             // Make the new COI object
