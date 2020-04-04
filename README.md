@@ -8,7 +8,7 @@ unionData is a Tuple5 as shown below.
 
 **Description of tuple fields**
 | f0        	  | f1              | f2  			  |	f3			    |	f4			  |	f5			  |	f6			  |
-|:---------------|:---------------|:---------------|:---------------|:---------------|
+|:---------------|:---------------|:---------------|:---------------|:---------------|:---------------|:---------------|
 | Key <br>0: Centroid<br>1: Point<br>2: COI  		| ID of cluster Point is assigned to	| Point / null 	| Double / null (Upper bound)	| Double[K] / null (K lower bounds)	| Centroid / null	| COI / null	|
 
 
