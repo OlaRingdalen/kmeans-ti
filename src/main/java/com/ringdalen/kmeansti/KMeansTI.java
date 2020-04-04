@@ -40,7 +40,7 @@ public class KMeansTI {
         // Fetching input parameters
         final ParameterTool params = ParameterTool.fromArgs(args);
 
-        // Set up execution environment. getExecutionEnvironment will work both in a local IDE as well as in i
+        // Set up execution environment. getExecutionEnvironment will work both in a local IDE as well as in a
         // cluster infrastructure.
         ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
@@ -168,10 +168,20 @@ public class KMeansTI {
 
         // Print the results, either to a file of the console
         if (params.has("output")) {
-            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ");
+            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ", FileSystem.WriteMode.OVERWRITE);
 
             // Calling execute will trigger the execution of the file sink (file sinks are lazy)
             JobExecutionResult executionResult = env.execute("KMeansTI");
+
+            //int a = executionResult.getAccumulatorResult("distCalcComputeCOI");
+            //int b = executionResult.getAccumulatorResult("distCalcSelectNearestCenter");
+            //int c = executionResult.getAccumulatorResult("distCalcSelectInitialNearestCenter");
+            //int d = executionResult.getAccumulatorResult("numIterations");
+
+            //System.out.println("distCalcComputeCOI " + a);
+            //System.out.println("distCalcSelectNearestCenter " + b);
+            //System.out.println("distCalcSelectInitialNearestCenter " + c);
+            //System.out.println("numIterations " + d);
 
         } else {
             System.out.println("Printing result to stdout. Use --output to specify output path.");
@@ -241,7 +251,20 @@ public class KMeansTI {
      * This class implements the FilterFunction in order to filter out a COI object based on convergence. A returned
      * COI object means that the algorithm has not converged.
      */
-    public static class checkConvergenceFilter implements FilterFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
+    public static class checkConvergenceFilter extends RichFilterFunction<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> {
+
+        // Accumulator used to track the total number of iterations
+        private IntCounter numIterations = new IntCounter();
+
+        /**
+         * Fetched the accumulator from the runtime context
+         * @param parameters The runtime parameters
+         */
+        @Override
+        public void open(Configuration parameters) {
+            // Registering the accumulator object and defining the name of the accumulator
+            getRuntimeContext().addAccumulator("numIterations", this.numIterations);
+        }
 
         /**
          * Filter out and return the COI object if not all centroids has converged (meaning that they have moved more
@@ -256,6 +279,9 @@ public class KMeansTI {
 
             double[] oldNewCentroidDistances = COITuple.f6.distMap;
             boolean hasConverged = false;
+
+            // Add one to the number of iterations
+            this.numIterations.add(1);
 
             // Loop trough all oldNewCentroidDistances to check for convergence
             for (double distance : oldNewCentroidDistances) {
@@ -373,6 +399,7 @@ public class KMeansTI {
 
             Point point = tuple.f1;
             Double[] lb = tuple.f3;
+
             Centroid c = centroids.iterator().next();
 
             // Calculating the distance between the first centroid in the collection and this point
@@ -451,8 +478,21 @@ public class KMeansTI {
             // Unpacking the COI object
             COI coi = new ArrayList<>(coiCollection).get(0);
 
-            // Unpacking the centroids
+            // Unpacking the centroids and sorting them
             Centroid[] centroidArray =  centroids.toArray(new Centroid[0]);
+            Arrays.sort(centroidArray);
+
+            /*boolean test = false;
+            for (int i = 0; i < centroidArray.length-1; i++) {
+                if ((centroidArray[i].id + 1) != centroidArray[i+1].id) {
+                    test = true;
+                }
+            }
+
+            if (test) {
+                System.out.println("Something is wrong!");
+            }*/
+
             Point point = tuple.f1;
 
             Integer closestCentroidId = tuple.f0;
