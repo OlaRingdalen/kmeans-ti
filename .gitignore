@@ -27,3 +27,6 @@ target/
 
 # IntelliJ files. Not needed in git.
 .idea
+
+# output from program
+outfile.txt/
