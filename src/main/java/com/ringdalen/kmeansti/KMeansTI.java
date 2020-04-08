@@ -168,20 +168,20 @@ public class KMeansTI {
 
         // Print the results, either to a file of the console
         if (params.has("output")) {
-            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ", FileSystem.WriteMode.OVERWRITE);
+            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
             // Calling execute will trigger the execution of the file sink (file sinks are lazy)
             JobExecutionResult executionResult = env.execute("KMeansTI");
 
-            //int a = executionResult.getAccumulatorResult("distCalcComputeCOI");
-            //int b = executionResult.getAccumulatorResult("distCalcSelectNearestCenter");
-            //int c = executionResult.getAccumulatorResult("distCalcSelectInitialNearestCenter");
-            //int d = executionResult.getAccumulatorResult("numIterations");
+            int a = executionResult.getAccumulatorResult("distCalcComputeCOI");
+            int b = executionResult.getAccumulatorResult("distCalcSelectNearestCenter");
+            int c = executionResult.getAccumulatorResult("distCalcSelectInitialNearestCenter");
+            int d = executionResult.getAccumulatorResult("numIterations");
 
-            //System.out.println("distCalcComputeCOI " + a);
-            //System.out.println("distCalcSelectNearestCenter " + b);
-            //System.out.println("distCalcSelectInitialNearestCenter " + c);
-            //System.out.println("numIterations " + d);
+            System.out.println("distCalcComputeCOI " + a);
+            System.out.println("distCalcSelectNearestCenter " + b);
+            System.out.println("distCalcSelectInitialNearestCenter " + c);
+            System.out.println("numIterations " + d);
 
         } else {
             System.out.println("Printing result to stdout. Use --output to specify output path.");
@@ -288,7 +288,7 @@ public class KMeansTI {
 
                 // Checking if one of the centroids has moved more than 0.01.
                 // If one has, the algorithm has not converged
-                if (distance > 0.01) {
+                if (distance > 0.0001) {
                     hasConverged = true;
 
                     // Jump out of the loop and return result
