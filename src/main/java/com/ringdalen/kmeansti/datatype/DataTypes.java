@@ -10,50 +10,30 @@ public class DataTypes {
     /**
      * A n-dimensional point.
      */
-    public static class Point implements Serializable {
+    public static class Base implements Serializable {
 
         public double[] features;
         public int dimension;
 
-        public double upperBound;
-        public double[] lowerBound;
-
         /** A public no-argument constructor is required for POJOs (Plain Old Java Objects) */
-        public Point() {}
+        public Base() {}
 
         /** A public constructor that takes the features, represented as an array of doubles as the argument */
-        public Point(double[] features) {
+        public Base(double[] features) {
             this.features = features;
             this.dimension = features.length;
-            this.upperBound = 0.0;
-
-            // When no value is assigned, the array defaults to only 0's
-            this.lowerBound = new double[dimension];
-        }
-
-        /** Function that adds this point with any given point */
-        public Point add(Point other) {
-            for(int i = 0; i < dimension; i++) {
-                features[i] += other.features[i];
-            }
-
-            return this;
         }
 
         /** Function that divides this point with a given value */
-        public Point div(long val) {
+        public Base div(long val) {
             for(int i = 0; i < dimension; i++) {
                 features[i] /= val;
             }
             return this;
         }
 
-        public double getLowerBound(int i) {
-            return lowerBound[i];
-        }
-
         /** Function that return the euclidian distance between this point and any given point */
-        public double euclideanDistance(Point other) {
+        public double euclideanDistance(Base other) {
             double dist = 0;
 
             for(int i = 0; i < dimension; i++) {
@@ -61,13 +41,6 @@ public class DataTypes {
             }
 
             return Math.sqrt(dist);
-        }
-
-        /** Function to clear / null-out the point */
-        public void clear() {
-            for(int i = 0; i < dimension; i++) {
-                features[i] = 0.0;
-            }
         }
 
         /** Function to represent the point in a string */
@@ -87,10 +60,41 @@ public class DataTypes {
         }
     }
 
+    public static class Point extends Base implements Serializable {
+        public int trueClass;
+
+        /** A public no-argument constructor is required for POJOs (Plain Old Java Objects) */
+        public Point() {}
+
+        public Point(int trueClass, double[] features) {
+            super(features);
+            this.trueClass = trueClass;
+        }
+
+        /** Function that adds this point with any given point */
+        public Point add(Point other) {
+            for(int i = 0; i < dimension; i++) {
+                features[i] += other.features[i];
+            }
+
+            return this;
+        }
+
+        /**
+         * Function to represent the point as a string
+         *
+         * @return String with true class, as well as string from base class
+         */
+        @Override
+        public String toString()  {
+            return (trueClass + " " + super.toString());
+        }
+    }
+
     /**
      * A n-dimensional centroid, basically a point with an ID.
      */
-    public static class Centroid extends Point implements Comparable<Centroid>{
+    public static class Centroid extends Base implements Comparable<Centroid>{
 
         /** The ID of an centroid, which also represents the cluster */
         public int id;
@@ -105,7 +109,7 @@ public class DataTypes {
         }
 
         /** A public constructor that takes an id and a Point as the arguments */
-        public Centroid(int id, Point p) {
+        public Centroid(int id, Base p) {
             super(p.features);
             this.id = id;
         }

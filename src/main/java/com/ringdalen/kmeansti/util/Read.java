@@ -44,19 +44,24 @@ public class Read {
     public static class ParsePointData implements MapFunction<String, Tuple4<Integer, Point, Double, Double[]>> {
         double[] row;
         int k;
+        int trueClass;
 
         public ParsePointData(int d, int k){
             this.row = new double[d];
             this.k = k;
+            this.trueClass = 0;
         }
 
         @Override
         public Tuple4<Integer, Point, Double, Double[]> map(String s) {
             String[] buffer = s.split(" ");
 
+            // Setting the true class for this point, used to check accuracy of clustering later
+            trueClass = Integer.parseInt(buffer[0]);
+
             // Extracting values from the input string
             for(int i = 0; i < row.length; i++) {
-                row[i] = Double.parseDouble(buffer[i]);
+                row[i] = Double.parseDouble(buffer[i+1]);
             }
 
             // Declaring the initial upper bound to -1
@@ -66,7 +71,7 @@ public class Read {
             Double[] lb = new Double[k];
             Arrays.fill(lb, 0.0);
 
-            return new Tuple4<>(-1, new Point(row), ub, lb);
+            return new Tuple4<>(-1, new Point(trueClass, row), ub, lb);
         }
     }
 

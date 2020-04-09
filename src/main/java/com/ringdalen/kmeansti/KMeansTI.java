@@ -168,12 +168,12 @@ public class KMeansTI {
 
         // Print the results, either to a file of the console
         if (params.has("output")) {
-            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
+            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ", FileSystem.WriteMode.OVERWRITE);
 
             // Calling execute will trigger the execution of the file sink (file sinks are lazy)
             JobExecutionResult executionResult = env.execute("KMeansTI");
 
-            int a = executionResult.getAccumulatorResult("distCalcComputeCOI");
+            /*int a = executionResult.getAccumulatorResult("distCalcComputeCOI");
             int b = executionResult.getAccumulatorResult("distCalcSelectNearestCenter");
             int c = executionResult.getAccumulatorResult("distCalcSelectInitialNearestCenter");
             int d = executionResult.getAccumulatorResult("numIterations");
@@ -181,7 +181,7 @@ public class KMeansTI {
             System.out.println("distCalcComputeCOI " + a);
             System.out.println("distCalcSelectNearestCenter " + b);
             System.out.println("distCalcSelectInitialNearestCenter " + c);
-            System.out.println("numIterations " + d);
+            System.out.println("numIterations " + d); */
 
         } else {
             System.out.println("Printing result to stdout. Use --output to specify output path.");
