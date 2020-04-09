@@ -30,3 +30,7 @@ target/
 
 # output from program
 outfile.txt/
+outfile.txt
+
+# Data used to test with
+data/

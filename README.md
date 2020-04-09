@@ -32,15 +32,11 @@ flink-1.9.1/bin/flink run -c com.ringdalen.kmeans.KMeans flink-kmeans-0.1.jar \
 ### Input
 Input is a CSV file with " " (space) as separators, no header and only Int or Double.
 
-Example CSV line for points.
+Example CSV line for points: ``` <true_class> <feature_1> ... <feature_n>```
 
-``` <true_class> <feature_1> ... <feature_n>```
+True class should be set to 0 if the class is not known in advance.
 
-True class could also be 0 if the class is not known.
-
-Example CSV line for centroids:
-
-``` <id / class> <feature_1> ... <feature_n>```
+Example CSV line for centroids: ``` <id / class> <feature_1> ... <feature_n>```
 
 ID / Class must be integers starting from 1 up to n.
 
