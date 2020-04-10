@@ -22,7 +22,7 @@ under the License.
 
 	<groupId>com.ringdalen</groupId>
 	<artifactId>kmeans-ti</artifactId>
-	<version>0.2</version>
+	<version>0.1</version>
 	<packaging>jar</packaging>
 
 	<name>Flink Quickstart Job</name>
