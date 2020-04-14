@@ -59,11 +59,11 @@ public class KMeansTI {
         ///////////////////////// Initial mapping of points and computation of new centroids /////////////////////////
 
         // Computing the COI information
-        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> coiTuple = centroids
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> firstCoiTuple = centroids
                 .reduceGroup(new computeCOI())
                 .withBroadcastSet(centroids, "oldCentroids");
 
-        DataSet<COI> coi = coiTuple.map(new ExtractCOI());
+        DataSet<COI> coi = firstCoiTuple.map(new ExtractCOI());
 
         // Select the initial cluster the point is assigned to
         DataSet<Tuple4<Integer, Point, Double, Double[]>> initialClusteredPoints = points
@@ -79,6 +79,14 @@ public class KMeansTI {
                 .map(new CountAppender()).groupBy(0).reduce(new CentroidAccumulator())
                 // Compute new centroids from point counts and coordinate sums
                 .map(new CentroidAverager());
+
+        // Extracting centroids for use in calculation of COI
+        DataSet<Centroid> initialCentroids = initialCentroidsTuple.filter(new CentroidFilter()).map(new ExtractCentroids());
+
+        // Computing new COI information after new centroids have been produced
+        DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> coiTuple = initialCentroids
+                .reduceGroup(new computeCOI())
+                .withBroadcastSet(centroids, "oldCentroids");
 
         ///////////////////////// Initial mapping of points and computation of new centroids /////////////////////////
 
@@ -146,6 +154,7 @@ public class KMeansTI {
 
         // Check if the algorithm has converged. If no centroids has moved more than 0.001, an empty DataSet will be
         // returned and that will halt the iteration.
+
         DataSet<Tuple7<Integer, Integer, Point, Double, Double[], Centroid, COI>> converged = coiToNextIteration.filter(new checkConvergenceFilter(convergence));
 
         // Combine points, centroids and coi DataSets to one DataSet
@@ -173,15 +182,15 @@ public class KMeansTI {
             // Calling execute will trigger the execution of the file sink (file sinks are lazy)
             JobExecutionResult executionResult = env.execute("KMeansTI");
 
-            /*int a = executionResult.getAccumulatorResult("distCalcComputeCOI");
-            int b = executionResult.getAccumulatorResult("distCalcSelectNearestCenter");
-            int c = executionResult.getAccumulatorResult("distCalcSelectInitialNearestCenter");
-            int d = executionResult.getAccumulatorResult("numIterations");
+            //int a = executionResult.getAccumulatorResult("distCalcComputeCOI");
+            //int b = executionResult.getAccumulatorResult("distCalcSelectNearestCenter");
+            //int c = executionResult.getAccumulatorResult("distCalcSelectInitialNearestCenter");
+            //int d = executionResult.getAccumulatorResult("numIterations");
 
-            System.out.println("distCalcComputeCOI " + a);
-            System.out.println("distCalcSelectNearestCenter " + b);
-            System.out.println("distCalcSelectInitialNearestCenter " + c);
-            System.out.println("numIterations " + d);*/
+            //System.out.println("distCalcComputeCOI " + a);
+            //System.out.println("distCalcSelectNearestCenter " + b);
+            //System.out.println("distCalcSelectInitialNearestCenter " + c);
+            //System.out.println("numIterations " + d);
 
         } else {
             System.out.println("Printing result to stdout. Use --output to specify output path.");
@@ -286,7 +295,7 @@ public class KMeansTI {
 
             boolean hasConverged = false;
 
-            System.out.println("Convergence criteria is: " + convergence_criteria);
+            //System.out.println("Convergence criteria is: " + convergence_criteria);
 
             // Add one to the number of iterations
             this.numIterations.add(1);
@@ -396,7 +405,7 @@ public class KMeansTI {
             getRuntimeContext().addAccumulator("distCalcSelectInitialNearestCenter", this.distCalcSelectInitialNearestCenter);
 
             // DEBUGGING
-            getRuntimeContext().addAccumulator("initAss", this.initAss);
+            //getRuntimeContext().addAccumulator("initAss", this.initAss);
 
         }
 
@@ -412,7 +421,7 @@ public class KMeansTI {
         public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) {
 
             // DEBUGGING
-            this.initAss.add(1);
+            //this.initAss.add(1);
 
             // The COI object is extracted to a single object
             COI coi = new ArrayList<>(coiCollection).get(0);
@@ -449,8 +458,6 @@ public class KMeansTI {
 
                     if(dist < minDistance) {
 
-                        //System.out.println(this.initAss + ": Changing closest centroid to " + centroid.id);
-
                         minDistance = dist;
                         closestCentroidId = centroid.id;
                     }
@@ -459,60 +466,9 @@ public class KMeansTI {
 
             Double ub = minDistance;
 
-            System.out.println(closestCentroidId + " - Initial assignment");
-
             // Emit a new record with the current closest center ID and the data point.
             return new Tuple4<>(closestCentroidId, point, ub, lb);
         }
-
-        /*@Override
-        public Tuple4<Integer, Point, Double, Double[]> map(Tuple4<Integer, Point, Double, Double[]> tuple) {
-
-            // DEBUGGING
-            this.initAss.add(1);
-
-            COI coi = new ArrayList<>(coiCollection).get(0);
-
-            List<Centroid> c = new ArrayList<>(centroids);
-            Collections.sort(c);
-
-            int pos = 0;
-            double dist;
-
-            Point point = tuple.f1;
-            Double[] lb = tuple.f3;
-
-            int cid = c.get(pos).id-1;
-
-            double minDist = dist = point.euclideanDistance(c.get(pos));
-
-            lb[cid] = minDist;
-
-            for (int i = 0; i < c.size(); i++) {
-
-                if(pos != cid) {
-
-                    if(0.5 * coi.iCD[cid][pos] < minDist) {
-
-                        lb[pos] = dist = point.euclideanDistance(c.get(i));
-
-                        if (dist < minDist) {
-                            minDist = dist;
-                            cid = pos;
-                        }
-                    }
-                }
-
-                pos = pos + 1;
-
-            }
-
-            double ub = minDist;
-
-            System.out.println(cid+1 + " - Initial assignment");
-
-            return new Tuple4<>(cid+1, point, ub, lb);
-        }*/
     }
 
     /**
@@ -570,8 +526,9 @@ public class KMeansTI {
             Double newUb = currentUb;
 
             // Calculating k new lower bounds
-            for (int i = 0; i < coi.k - 1; i++) {
+            for (int i = 0; i < coi.k; i++) {
                 newLb[i] = Math.max((currentLb[i] - coi.distMap[i]), 0.0);
+                //System.out.println("Lower bound nr. " + i + " is " + newLb[i]);
             }
 
             // Checking if the upperBound need to get updated
@@ -593,7 +550,7 @@ public class KMeansTI {
                     // Check if this centroid ID is not current assigned centroid ID
                     // Check if upper bound is greater than this points lower bound for centroid
                     // Check if DISTANCE(THIS CENTROID AND P'S CURRENT ASSIGNED CENTROID)  >= 2 * MIN_DIST
-                    if ((centroid.id != closestCentroidId) && (newUb > newLb[centroid.id-1]) && (newUb > coi.iCD[closestCentroidId-1][centroid.id-1])) {
+                    if ((centroid.id != closestCentroidId) && (newUb > newLb[centroid.id-1]) && (newUb > (0.5*coi.iCD[closestCentroidId-1][centroid.id-1]))) {
 
                         // Do only this if upper bound is updated
                         if (upperBoundUpdated) {
@@ -811,7 +768,7 @@ public class KMeansTI {
             COI coi = new COI(matrix, minCD, distMap);
 
             // DEBUGGING
-            System.out.println(coi);
+            //System.out.println(coi);
 
             // Initilazing empty values to put in the tuple
             Double emptyDouble = 0.0;
