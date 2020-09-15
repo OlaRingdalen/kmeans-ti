@@ -64,10 +64,10 @@ public class Read {
                 row[i] = Double.parseDouble(buffer[i+1]);
             }
 
-            // Declaring the initial upper bound to -1
+            // Declaring the initial upper bound
             Double ub = -1.0;
 
-            // Declaring the initial lower bounds to -1
+            // Declaring the initial lower bounds
             Double[] lb = new Double[k];
             Arrays.fill(lb, 0.0);
 

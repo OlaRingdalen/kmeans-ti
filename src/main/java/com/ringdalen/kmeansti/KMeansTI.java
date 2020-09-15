@@ -177,7 +177,7 @@ public class KMeansTI {
 
         // Print the results, either to a file of the console
         if (params.has("output")) {
-            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
+            clusteredPoints.writeAsCsv(params.get("output"), "\n", " ", FileSystem.WriteMode.OVERWRITE);
 
             // Calling execute will trigger the execution of the file sink (file sinks are lazy)
             JobExecutionResult executionResult = env.execute("KMeansTI");
@@ -566,9 +566,13 @@ public class KMeansTI {
                             dist1 = newUb;
                         }
 
-                        // TODO: More comments around her aswell
+
                         if (dist1 > newLb[centroid.id-1] || (dist1 > (0.5 * coi.iCD[closestCentroidId-1][centroid.id-1]))) {
                             dist2 = point.euclideanDistance(centroid);
+
+                            // Increasing the accumulator for number of distance calculations.
+                            this.distCalcSelectNearestCenter.add(1);
+
                             newLb[centroid.id-1] = dist2;
 
                             if(dist2 < dist1) {
